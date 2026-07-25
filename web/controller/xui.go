@@ -74,7 +74,9 @@ func (a *XUIController) index(c *gin.Context) {
 			return
 		}
 	}
-	html(c, "index.html", "pages.index.title", nil)
+	// The donate dialog on the VPN-UI tile. Rendered server-side rather than
+	// fetched: the list is static, so a round trip would only add a spinner.
+	html(c, "index.html", "pages.index.title", gin.H{"donate": donateAddresses})
 }
 
 // inbounds renders the inbounds management page.

@@ -85,6 +85,7 @@
 "expiry" = "تاريخ الانتهاء"
 "totalQuota" = "الحصة الإجمالية"
 "individualLinks" = "روابط فردية"
+"configFiles" = "ملفات الإعداد"
 "active" = "نشط"
 "inactive" = "غير نشط"
 "unlimited" = "غير محدود"
@@ -123,6 +124,9 @@
 "successLogin" = "لقد تم تسجيل الدخول إلى حسابك بنجاح."
 
 [pages.index]
+"donate" = "تبرع"
+"donateTitle" = "ادعم VPN-UI"
+"donateIntro" = "إذا كان VPN-UI مفيدًا لك، فإن التبرع إلى أي من هذه العناوين يساعد على استمرار صيانته."
 "restore" = "استعادة"
 "systemStatus" = "حالة النظام"
 "title" = "نظرة عامة"

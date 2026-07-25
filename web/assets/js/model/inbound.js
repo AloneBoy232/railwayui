@@ -3551,11 +3551,12 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3571,6 +3572,13 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3591,6 +3599,7 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3614,6 +3623,7 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -3721,11 +3731,12 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3741,6 +3752,13 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3761,6 +3779,7 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3784,6 +3803,7 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4023,11 +4043,12 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4043,6 +4064,13 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4064,6 +4092,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4087,6 +4116,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4219,11 +4249,12 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4239,6 +4270,13 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4260,6 +4298,7 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4283,6 +4322,7 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4413,11 +4453,12 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4433,6 +4474,13 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4454,6 +4502,7 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4477,6 +4526,7 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4627,11 +4677,12 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4647,6 +4698,13 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4668,6 +4726,7 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4691,6 +4750,7 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4820,11 +4880,12 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     devices = [],
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4849,6 +4910,13 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4879,6 +4947,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4905,6 +4974,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -5076,11 +5146,12 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     devices = [],
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -5105,6 +5176,13 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -5135,6 +5213,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -5161,6 +5240,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -5260,7 +5340,7 @@ Inbound.MtprotoSettings.MtprotoUser = class extends XrayCommonClass {
     externalProxy = [],
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
@@ -5516,7 +5596,7 @@ Inbound.SshSettings.SshUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,

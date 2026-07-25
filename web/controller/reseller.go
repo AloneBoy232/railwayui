@@ -193,17 +193,72 @@ func (a *ResellerController) update(c *gin.Context) {
 	jsonMsg(c, I18nWeb(c, "pages.resellers.edit"), nil)
 }
 
+// delResellerForm carries the UI's choice when the reseller still owns accounts:
+// "keep" hands them to the house, "cascade" deletes them. Empty still refuses, so
+// the destructive path is never the default.
+type delResellerForm struct {
+	Mode string `json:"mode" form:"mode"`
+}
+
 func (a *ResellerController) del(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.resellers.del"), err)
 		return
 	}
-	if err := a.resellerService.DeleteReseller(session.GetLoginUser(c), id); err != nil {
+	form := &delResellerForm{}
+	if err := c.ShouldBind(form); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.resellers.del"), err)
 		return
 	}
+	res, err := a.resellerService.DeleteReseller(session.GetLoginUser(c), id, form.Mode)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.resellers.del"), err)
+		return
+	}
+	reconfigureAfterCascade(res)
 	jsonMsg(c, I18nWeb(c, "pages.resellers.del"), nil)
+}
+
+// reconfigureAfterCascade regenerates and restarts the daemons whose clients a
+// cascade delete removed, reusing InboundController's per-protocol change hooks so
+// the reconfigure sequence lives in one place (and matches the single-client
+// delete route exactly). A zero-value InboundController is how NewInboundController
+// builds it too: every service field it uses is a stateless value type.
+func reconfigureAfterCascade(res service.DeleteResult) {
+	if len(res.Protocols) == 0 && !res.NeedXrayRestart {
+		return
+	}
+	ic := &InboundController{}
+	for proto := range res.Protocols {
+		switch proto {
+		case model.L2TP:
+			ic.onL2tpChanged()
+		case model.PPTP:
+			ic.onPptpChanged()
+		case model.OPENVPN:
+			ic.onOpenVpnChanged()
+		case model.OPENCONNECT:
+			ic.onOcservChanged()
+		case model.SSTP:
+			ic.onSstpChanged()
+		case model.IKEV2:
+			ic.onIkev2Changed()
+		case model.WGC:
+			ic.onWgcChanged()
+		case model.AWG:
+			ic.onAwgChanged()
+		case model.MTPROTO:
+			ic.onMtprotoChanged()
+		case model.SSH:
+			ic.onSshChanged()
+			// Native Xray protocols (vmess/vless/trojan/shadowsocks/wireguard) have no
+			// daemon; the live RemoveUser already ran, so NeedXrayRestart covers them.
+		}
+	}
+	if res.NeedXrayRestart {
+		ic.xrayService.SetToNeedRestart()
+	}
 }
 
 // recharge is its own route rather than a field on the edit form because the

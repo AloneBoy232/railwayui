@@ -3,12 +3,14 @@ package sub
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"net"
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +34,10 @@ type SubService struct {
 	datepicker     string
 	inboundService service.InboundService
 	settingService service.SettingService
+	sshService     service.SshService
+	wgcService     service.WgcService
+	awgService     service.AwgService
+	openvpnService service.OpenVpnService
 }
 
 // NewSubService creates a new subscription service with the given configuration.
@@ -80,12 +86,17 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.C
 		}
 		for _, client := range clients {
 			if client.Enable && client.SubID == subId {
-				link := s.getLink(inbound, client.Email)
-				result = append(result, link)
+				// Count every matching client's usage so the subscriber page shows the
+				// account's remaining traffic/days for ALL protocols, including ones with
+				// no raw link (wg-c/awg deliver via the Clash sub; the credential VPNs add
+				// a connection-info line via getLink).
 				ct := s.getClientTraffics(inbound.ClientStats, client.Email)
 				clientTraffics = append(clientTraffics, ct)
 				if ct.LastOnline > lastOnline {
 					lastOnline = ct.LastOnline
+				}
+				if link := s.getLink(inbound, client.Email); link != "" {
+					result = append(result, link)
 				}
 			}
 		}
@@ -126,7 +137,7 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) 
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
 		WHERE
-			protocol in ('vmess','vless','trojan','shadowsocks','hysteria','hysteria2')
+			protocol in ('vmess','vless','trojan','shadowsocks','hysteria','hysteria2','mtproto','ssh','wg-c','awg','openvpn','l2tp','pptp','openconnect','sstp','ikev2')
 			AND JSON_EXTRACT(client.value, '$.subId') = ? AND enable = ?
 	)`, subId, true).Find(&inbounds).Error
 	if err != nil {
@@ -179,8 +190,327 @@ func (s *SubService) getLink(inbound *model.Inbound, email string) string {
 		return s.genShadowsocksLink(inbound, email)
 	case "hysteria", "hysteria2":
 		return s.genHysteriaLink(inbound, email)
+	case "mtproto":
+		// tg:// is the link Telegram itself imports, but no proxy client can parse it,
+		// so the account would contribute nothing a subscription importer recognises.
+		// The card is what makes the account appear (with its usage) in those clients.
+		return joinLinks(s.genMtprotoLink(inbound, email), s.genConnectionCard(inbound, email))
+	case "ssh":
+		// Same split: ssh:// here is the Shadowrocket/base64 form (service.sshShareLink),
+		// which subscription importers do not read either.
+		return joinLinks(s.genSshLink(inbound, email), s.genConnectionCard(inbound, email))
+	case "wg-c", "awg":
+		// A real, importable link rather than a card: Xray/sing-box clients speak
+		// WireGuard, so these accounts get a working entry. The full-fidelity .conf
+		// still comes from the Clash sub and the per-client modal.
+		return s.genWireguardLink(inbound, email)
+	case "openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2":
+		// Username/password VPNs have no importable proxy URI at all, so the entry is
+		// a connection card: parseable enough for a client to accept the account and
+		// show its quota, with the credentials in the name.
+		return s.genConnectionCard(inbound, email)
 	}
 	return ""
+}
+
+// joinLinks joins the per-protocol entries of one account with "\n", the same
+// convention genHysteriaLink uses for its external-proxy fan-out (the raw sub endpoint
+// splits them back apart), skipping the ones that came out empty.
+func joinLinks(links ...string) string {
+	out := make([]string, 0, len(links))
+	for _, l := range links {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// --- New-protocol raw links: MTProto tg:// and SSH ssh:// ---
+
+// mtprotoModeOrder mirrors MtprotoUser.enabledModes() (web/assets/js/model/inbound.js)
+// so the Go and JS links come out in the same order.
+var mtprotoModeOrder = []string{"classic", "secure", "tls"}
+
+// mtprotoSecretFor mirrors MtprotoUser.secretFor() byte for byte. The default domain
+// is applied BEFORE the trim (JS: (this.tlsDomain||"www.google.com").trim()), so a
+// whitespace-only domain yields an empty hex suffix; replicated deliberately.
+func mtprotoSecretFor(secret, mode, tlsDomain string) string {
+	switch mode {
+	case "secure":
+		return "dd" + secret
+	case "tls":
+		domain := tlsDomain
+		if domain == "" {
+			domain = "www.google.com"
+		}
+		domain = strings.TrimSpace(domain)
+		return "ee" + secret + hex.EncodeToString([]byte(domain)) // lowercase hex == JS padStart(2,"0")
+	default:
+		return secret
+	}
+}
+
+func mtprotoModeEnabled(c model.Client, mode string) bool {
+	switch mode {
+	case "classic":
+		return c.ModeClassic
+	case "secure":
+		return c.ModeSecure
+	case "tls":
+		return c.ModeTls
+	}
+	return false
+}
+
+// encodeURIComponentGo replicates JS encodeURIComponent. url.QueryEscape is NOT a
+// substitute: it escapes ! * ' ( ) and encodes space as '+' rather than %20. Each
+// UTF-8 byte is percent-encoded, so walk bytes.
+func encodeURIComponentGo(s string) string {
+	const keep = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(keep, s[i]) >= 0 {
+			b.WriteByte(s[i])
+		} else {
+			fmt.Fprintf(&b, "%%%02X", s[i])
+		}
+	}
+	return b.String()
+}
+
+// genMtprotoLink emits one tg://proxy link per enabled mode per endpoint, identical to
+// MtprotoUser.links(). The links are "\n"-joined (the same convention genHysteriaLink
+// uses for its external-proxy fan-out); the raw sub endpoint splits them back apart.
+func (s *SubService) genMtprotoLink(inbound *model.Inbound, email string) string {
+	if inbound.Protocol != model.MTPROTO {
+		return ""
+	}
+	clients, _ := s.inboundService.GetClients(inbound)
+	idx := findClientIndex(clients, email)
+	if idx < 0 {
+		return ""
+	}
+	c := clients[idx]
+
+	type endpoint struct {
+		host string
+		port int
+	}
+	var endpoints []endpoint
+	// Mirror links() EXACTLY: no empty-dest filter, no port fallback. Diverging here
+	// would break byte-for-byte parity with the JS-generated links.
+	if len(c.ExternalProxy) > 0 {
+		for _, ep := range c.ExternalProxy {
+			endpoints = append(endpoints, endpoint{host: ep.Dest, port: ep.Port})
+		}
+	} else {
+		endpoints = append(endpoints, endpoint{host: s.address, port: inbound.Port})
+	}
+
+	var links []string
+	for _, ep := range endpoints {
+		for _, mode := range mtprotoModeOrder {
+			if !mtprotoModeEnabled(c, mode) {
+				continue
+			}
+			links = append(links, "tg://proxy?server="+encodeURIComponentGo(ep.host)+
+				"&port="+strconv.Itoa(ep.port)+
+				"&secret="+mtprotoSecretFor(c.Secret, mode, c.TlsDomain))
+		}
+	}
+	return strings.Join(links, "\n")
+}
+
+// genSshLink reuses the SSH service's own config renderer so a subscription entry is
+// identical to the per-client config modal by construction (SSH external proxies are
+// inbound-level, not on model.Client, so the link cannot be rebuilt from the client).
+func (s *SubService) genSshLink(inbound *model.Inbound, email string) string {
+	if inbound.Protocol != model.SSH {
+		return ""
+	}
+	cfgs, err := s.sshService.RenderClientConfigs(inbound, email, s.address)
+	if err != nil {
+		return ""
+	}
+	links := make([]string, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		if cfg.Link != "" {
+			links = append(links, cfg.Link)
+		}
+	}
+	return strings.Join(links, "\n")
+}
+
+// genConnectionCard produces the subscription entry for the protocols Xray-core has no
+// outbound for: the username/password VPNs (l2tp, pptp, openvpn, openconnect, sstp,
+// ikev2) plus mtproto and ssh, whose own links (tg://, the base64 ssh://) no
+// subscription importer reads.
+//
+// It is deliberately a `trojan://` URI rather than the plain-text summary this used to
+// emit. A subscription client keeps only the lines it can parse, so a plain-text line
+// left the account with NO entry: the group imported as empty and the quota/expiry the
+// Subscription-Userinfo header carries had nothing to attach to. The card is that entry.
+// Its host:port is the real VPN endpoint and its password field the real credential, so
+// nothing about it is invented; it simply cannot be dialled by a proxy client, which is
+// true of the protocol either way.
+//
+// The name comes from genRemark, so it carries the same remaining-traffic and
+// remaining-days suffixes an Xray node's name gets when Show Info is on, and the
+// credentials ride along in it, since the name is all a client displays.
+func (s *SubService) genConnectionCard(inbound *model.Inbound, email string) string {
+	clients, _ := s.inboundService.GetClients(inbound)
+	idx := findClientIndex(clients, email)
+	if idx < 0 {
+		return ""
+	}
+	c := clients[idx]
+
+	server := s.address
+	if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+		server = l
+	}
+
+	// What goes in the URI's credential slot: the account's own secret, so the card
+	// carries no filler. ikev2 in psk/eap-tls mode has an email-only account with no
+	// password, hence the fallback.
+	secret := c.Password
+	if inbound.Protocol == model.MTPROTO {
+		secret = c.Secret
+	}
+	if secret == "" {
+		secret = email
+	}
+
+	// The login name is NOT always the account email. The RADIUS protocols accept
+	// either (radius.go matches client.ID or client.Email), but the SSH gateway compares
+	// the client id alone (SshService.lookupAccount), so showing the email there would
+	// hand the subscriber a username that cannot log in. mtproto has no username at all:
+	// the secret IS the credential.
+	details := []string{protocolLabel(inbound.Protocol)}
+	switch inbound.Protocol {
+	case model.MTPROTO:
+		if c.Secret != "" {
+			details = append(details, "secret="+c.Secret)
+		}
+	case model.SSH:
+		details = append(details, "user="+c.ID)
+		if c.Password != "" {
+			details = append(details, "pass="+c.Password)
+		}
+	default:
+		details = append(details, "user="+email)
+		if c.Password != "" {
+			details = append(details, "pass="+c.Password)
+		}
+	}
+
+	// The pre-shared key lives at the inbound level for the protocols that use one.
+	var settings map[string]any
+	_ = json.Unmarshal([]byte(inbound.Settings), &settings)
+	switch inbound.Protocol {
+	case model.L2TP:
+		if en, _ := settings["ipsecEnable"].(bool); en {
+			if psk, _ := settings["ipsecPsk"].(string); strings.TrimSpace(psk) != "" {
+				details = append(details, "psk="+psk)
+			}
+		}
+	case model.IKEV2:
+		if mode, _ := settings["authMode"].(string); mode == "psk" {
+			if psk, _ := settings["psk"].(string); strings.TrimSpace(psk) != "" {
+				details = append(details, "psk="+psk)
+			}
+		}
+	}
+
+	// No query params on purpose: `trojan://secret@host:port#name` is the shape every
+	// importer handles, and each extra parameter is one more thing a strict parser can
+	// reject. url.URL escapes the credential and the fragment (spaces as %20, not '+',
+	// which a fragment must have).
+	u := url.URL{
+		Scheme:   "trojan",
+		User:     url.User(secret),
+		Host:     net.JoinHostPort(server, strconv.Itoa(inbound.Port)),
+		Fragment: s.genRemark(inbound, email, strings.Join(details, " ")),
+	}
+	return u.String()
+}
+
+// genWireguardLink emits an importable wireguard:// link per device x endpoint for a wg-c
+// or awg account, in the same shape the panel already hands out for native WireGuard
+// inbounds (Inbound.getWireguardLink in web/assets/js/model/inbound.js): the client
+// private key as the userinfo, the server key/address/mtu as query params. The keys come
+// from the protocol service, which is the only thing that holds them.
+//
+// awg's obfuscation parameters have no place in this URI shape, so an awg link imports as
+// plain WireGuard; the Clash sub carries the amnezia-wg-option block for clients that
+// support it.
+func (s *SubService) genWireguardLink(inbound *model.Inbound, email string) string {
+	var params []service.WgcClientParams
+	var err error
+	switch inbound.Protocol {
+	case model.WGC:
+		params, err = s.wgcService.RenderClientParams(inbound, email, s.address)
+	case model.AWG:
+		var awgParams []service.AwgClientParams
+		awgParams, err = s.awgService.RenderClientParams(inbound, email, s.address)
+		for _, p := range awgParams {
+			params = append(params, p.WgcClientParams)
+		}
+	default:
+		return ""
+	}
+	if err != nil {
+		logger.Error("SubService - wireguard RenderClientParams:", err)
+		return ""
+	}
+
+	links := make([]string, 0, len(params))
+	for _, p := range params {
+		q := url.Values{}
+		q.Set("publickey", p.PublicKey)
+		if p.Address != "" {
+			q.Set("address", p.Address)
+		}
+		if p.MTU > 0 {
+			q.Set("mtu", strconv.Itoa(p.MTU))
+		}
+		if p.PreSharedKey != "" {
+			q.Set("presharedkey", p.PreSharedKey)
+		}
+		u := url.URL{
+			Scheme:   "wireguard",
+			User:     url.User(p.PrivateKey),
+			Host:     net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
+			RawQuery: q.Encode(),
+			Fragment: s.genRemark(inbound, email, p.Name),
+		}
+		links = append(links, u.String())
+	}
+	return strings.Join(links, "\n")
+}
+
+// protocolLabel is the human-facing name shown on a connection card.
+func protocolLabel(p model.Protocol) string {
+	switch p {
+	case model.OPENVPN:
+		return "OpenVPN"
+	case model.L2TP:
+		return "L2TP/IPsec"
+	case model.PPTP:
+		return "PPTP"
+	case model.IKEV2:
+		return "IKEv2"
+	case model.OPENCONNECT:
+		return "OpenConnect"
+	case model.SSTP:
+		return "SSTP"
+	case model.MTPROTO:
+		return "MTProto"
+	case model.SSH:
+		return "SSH"
+	}
+	return string(p)
 }
 
 // Protocol link generators are intentionally ordered as:
@@ -1568,6 +1898,7 @@ type PageData struct {
 	SubJsonUrl   string
 	SubClashUrl  string
 	Result       []string
+	Configs      []SubConfigLink
 }
 
 // ResolveRequest extracts scheme and host info from request/headers consistently.

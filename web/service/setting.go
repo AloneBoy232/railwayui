@@ -109,6 +109,8 @@ var defaultValueMap = map[string]string{
 	"ldapDefaultLimitIP":    "0",
 	"vpnProvisioned":        "false",
 	"provisionedProtocols":  "",
+	// Operator-configured SSH egress tunnels (JSON array); see web/service/sshoutbound.go.
+	"sshOutbounds": "",
 }
 
 // SettingService provides business logic for application settings management.

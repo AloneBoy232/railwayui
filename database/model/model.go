@@ -356,6 +356,20 @@ type Client struct {
 	Comment    string `json:"comment" form:"comment"`       // Client comment
 	Reset      int    `json:"reset" form:"reset"`           // Reset period in days
 
+	// Slot is the account's index into its inbound's address pool: which tunnel
+	// address(es) the data plane gives it. It is stored rather than derived from the
+	// account's position in clients[], because a position moves. Deleting an account
+	// compacted the list and renumbered every account after it, which silently moved
+	// live sessions onto other accounts' addresses and, on WireGuard, broke the
+	// already-installed client config outright (its Address is written into the file,
+	// and the server routes the peer to whatever the panel computes now).
+	//
+	// A pointer so an absent value is distinguishable from slot 0: rows written before
+	// slots existed have none, and every read falls back to the list index for them
+	// (see slotOr) until MigrationAccountSlots stamps them. omitempty keeps the client
+	// JSON of the protocols that have no address pool byte-identical.
+	Slot *int `json:"slot,omitempty" form:"slot"`
+
 	// MTProto Proxy per-account settings. Every client posted to the panel is
 	// normalized through THIS struct, so a field missing here is silently dropped no
 	// matter what the UI sent: which for mtproto means an account with no secret and

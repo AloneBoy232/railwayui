@@ -1281,30 +1281,132 @@ func (s *ResellerService) Recharge(caller *model.User, id int, deltaBytes int64)
 		Where("user_id = ?", id).Update("allowance_bytes", next).Error
 }
 
-// DeleteReseller removes a reseller. Refuses while they still own accounts:
-// those keep working and their customers keep connecting either way, so the
-// deletion has to be deliberate. Mirrors AdminService.DeleteAdmin refusing an
-// admin who still owns inbounds.
-func (s *ResellerService) DeleteReseller(caller *model.User, id int) error {
+// Delete modes decide the fate of a reseller's accounts when it still owns some.
+const (
+	DeleteModeKeep    = "keep"    // drop the reseller, hand its accounts to the house
+	DeleteModeCascade = "cascade" // drop the reseller and delete its accounts
+)
+
+// DeleteResult reports what a delete touched so the controller can reconfigure
+// the daemons whose clients a cascade removed. Zero-valued for a keep or a
+// childless reseller: nothing on the data plane changed, nothing to regenerate.
+type DeleteResult struct {
+	Protocols       map[model.Protocol]bool // VPN daemon protocols to regenerate, deduped
+	NeedXrayRestart bool                    // a native client the live Xray API could not drop
+	Deleted         int                     // accounts the cascade removed
+	Kept            int                     // last-on-inbound / stale accounts handed to the house
+}
+
+// DeleteReseller removes a reseller. With accounts still owned, mode decides
+// their fate: "cascade" deletes them the same way the per-account delete route
+// does, "keep" hands them to the house (absence of a ResellerClient row is
+// exactly "the admin owns this account"). An empty mode with accounts present
+// refuses, as it always has, so the destructive path is never the default and an
+// old client or a script cannot silently destroy or orphan accounts.
+//
+// On cascade the accounts are removed BEFORE the reseller, so a mid-cascade
+// failure leaves "some accounts gone, reseller still owns the rest" (retryable)
+// rather than a deleted reseller with live accounts nobody bills.
+func (s *ResellerService) DeleteReseller(caller *model.User, id int, mode string) (DeleteResult, error) {
 	user, _, err := s.manageable(caller, id)
 	if err != nil {
-		return err
+		return DeleteResult{}, err
 	}
-	var owned int64
 	db := database.GetDB()
-	if err := db.Model(&model.ResellerClient{}).Where("user_id = ?", id).Count(&owned).Error; err != nil {
-		return err
+	var rows []model.ResellerClient
+	if err := db.Where("user_id = ?", id).Find(&rows).Error; err != nil {
+		return DeleteResult{}, err
 	}
-	if owned > 0 {
-		return fmt.Errorf("%w (%d)", ErrResellerHasClients, owned)
+	if len(rows) == 0 {
+		return DeleteResult{}, s.dropReseller(user.Id) // childless: mode is moot
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("user_id = ?", id).Delete(&model.ResellerProfile{}).Error; err != nil {
+	switch mode {
+	case DeleteModeKeep:
+		// The accounts stay byte-for-byte; only the ownership ledger goes, which
+		// makes them house-owned and visible to the inbound's admin.
+		if err := db.Where("user_id = ?", id).Delete(&model.ResellerClient{}).Error; err != nil {
+			return DeleteResult{}, err
+		}
+		return DeleteResult{}, s.dropReseller(user.Id)
+	case DeleteModeCascade:
+		res, err := s.cascadeClients(rows)
+		if err != nil {
+			return res, err // stop before dropping the reseller so a retry is possible
+		}
+		return res, s.dropReseller(user.Id)
+	default:
+		return DeleteResult{}, fmt.Errorf("%w (%d)", ErrResellerHasClients, len(rows))
+	}
+}
+
+// dropReseller removes the reseller row, its profile and its inbound grants once
+// the accounts have been dealt with. The balance vanishes with the profile: a
+// deleted reseller has nothing to refund to.
+func (s *ResellerService) dropReseller(userId int) error {
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ?", userId).Delete(&model.ResellerProfile{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", id).Delete(&model.InboundAccess{}).Error; err != nil {
+		if err := tx.Where("user_id = ?", userId).Delete(&model.InboundAccess{}).Error; err != nil {
 			return err
 		}
-		return tx.Where("id = ?", user.Id).Delete(&model.User{}).Error
+		return tx.Where("id = ?", userId).Delete(&model.User{}).Error
 	})
+}
+
+// cascadeClients deletes every VPN account a reseller owns the same way the
+// single-account delete route does (settings surgery, IP release, traffic-row
+// removal, live Xray RemoveUser) and drops each ledger row. It returns the set
+// of daemon protocols it touched so the caller can regenerate their configs.
+//
+// Two accounts are handed to the house instead of deleted: the last client on an
+// admin's inbound (which may not be emptied, and is not ours to destroy) and a
+// row whose account is already gone (stale ledger). Neither aborts the cascade.
+func (s *ResellerService) cascadeClients(rows []model.ResellerClient) (DeleteResult, error) {
+	res := DeleteResult{Protocols: map[model.Protocol]bool{}}
+	db := database.GetDB()
+	var inboundService InboundService
+	dropLedger := func(email string) error {
+		return db.Where("email = ?", email).Delete(&model.ResellerClient{}).Error
+	}
+	for _, rc := range rows {
+		inbound, err := inboundService.GetInbound(rc.InboundId)
+		if err != nil || inbound == nil {
+			// Inbound already gone; the account went with it. Drop the stale row.
+			if derr := dropLedger(rc.Email); derr != nil {
+				return res, derr
+			}
+			res.Kept++
+			continue
+		}
+		needRestart, err := inboundService.DelInboundClientByEmail(rc.InboundId, rc.Email)
+		if err != nil {
+			msg := err.Error()
+			switch {
+			case strings.Contains(msg, "no client remained"):
+				// Last client on the inbound: reassign to the house rather than
+				// destroy the admin's inbound.
+				if derr := dropLedger(rc.Email); derr != nil {
+					return res, derr
+				}
+				res.Kept++
+			case strings.Contains(msg, "not found"):
+				// Already gone: drop the stale ledger row and move on.
+				if derr := dropLedger(rc.Email); derr != nil {
+					return res, derr
+				}
+				res.Kept++
+			default:
+				return res, err
+			}
+			continue
+		}
+		if derr := dropLedger(rc.Email); derr != nil {
+			return res, derr
+		}
+		res.Protocols[inbound.Protocol] = true
+		res.NeedXrayRestart = res.NeedXrayRestart || needRestart
+		res.Deleted++
+	}
+	return res, nil
 }

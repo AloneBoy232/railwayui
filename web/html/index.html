@@ -443,6 +443,13 @@
           <button type="button" class="bo-btn bo-btn--primary"
             v-if="panelUpdate.available && !panelUpdate.updating"
             @click="openUpdateModal">{{ i18n "pages.index.updateNow" }}</button>
+          <!-- Always offered, unlike Update Now: it is the one action on this
+               tile that does not depend on the release check having run. -->
+          <button type="button" class="bo-btn bo-btn--ghost bo-btn--icon"
+            @click="openDonateModal">
+            <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-heart"></use></svg>
+            {{ i18n "pages.index.donate" }}
+          </button>
         </div>
       </div>
     </article>
@@ -476,6 +483,34 @@
       <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-info"></use></svg>
       {{ i18n "pages.index.updateModalIntro" }}
     </p>
+  </a-modal>
+
+  <!-- Donate dialog (VPN-UI tile). The addresses are rendered server-side from
+       web/controller/donate.go, which a test pins to README.md's Donate section
+       so the panel can never show an address the README has moved on from.
+       Each row is a copy target: these are pasted into a wallet, so the address
+       is monospaced, selectable, and copied verbatim rather than retyped. -->
+  <a-modal id="donate-modal" v-model="donateModal.visible" title='{{ i18n "pages.index.donateTitle" }}'
+    :closable="true" :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : 620"
+    @cancel="() => donateModal.visible = false" footer="">
+    <p class="bo-donate-intro">{{ i18n "pages.index.donateIntro" }}</p>
+    <ul class="bo-donate-list">
+      <li class="bo-donate-row" v-for="(d, i) in donateList" :key="d.chain">
+        <div class="bo-donate-chain">[[ d.chain ]]</div>
+        <code class="bo-donate-addr num">[[ d.addr ]]</code>
+        <button type="button" class="bo-icon-btn bo-donate-copy"
+          :class="donateModal.copied === i ? 'bo-icon-btn--ok' : ''"
+          @click="copyDonateAddress(i, d.addr)">
+          <!-- v-if/v-else rather than a bound :href: html/template treats an href
+               as a URL context and would rewrite a Vue expression to ZgotmplZ. -->
+          <svg class="bo-icon bo-icon-14" aria-hidden="true">
+            <use v-if="donateModal.copied === i" href="#bo-i-check-circle"></use>
+            <use v-else href="#bo-i-copy"></use>
+          </svg>
+          [[ donateModal.copied === i ? '{{ i18n "copied" }}' : '{{ i18n "copy" }}' ]]
+        </button>
+      </li>
+    </ul>
   </a-modal>
 
   <a-modal id="version-modal" v-model="versionModal.visible" title='{{ i18n "pages.index.xraySwitch" }}'
@@ -732,6 +767,13 @@
           <template #description>{{ i18n "pages.index.importDatabaseDesc" }}</template>
         </a-list-item-meta>
         <a-button @click="importDatabase()" type="primary" icon="upload" />
+      </a-list-item>
+      <a-list-item class="ant-backup-list-item">
+        <a-list-item-meta>
+          <template #title>{{ i18n "pages.index.importForeignTitle" }}</template>
+          <template #description>{{ i18n "pages.index.importForeignDesc" }}</template>
+        </a-list-item-meta>
+        <a-button @click="importForeignDatabase()" type="primary" icon="import" />
       </a-list-item>
     </a-list>
   </a-modal>
@@ -1459,6 +1501,16 @@
       panelLoc: { checked: false, found: false, countryCode: '', ipv4: '', ipv6: '' },
       // The release-notes dialog shown before an update is armed.
       updateModal: { visible: false },
+      // `copied` is the index of the row showing its "copied" confirmation, or
+      // -1 for none. An index rather than a boolean so two rows carrying the
+      // SAME address (several chains share one) confirm independently.
+      donateModal: { visible: false, copied: -1 },
+      // Rendered from web/controller/donate.go, which a test pins to README.md's
+      // Donate section. Emitted here as JS rather than as markup so each address
+      // lands in a JS string context, where html/template escapes it correctly —
+      // interpolating one into a Vue attribute expression instead would leave the
+      // escaping to whatever context the attribute happened to be classified as.
+      donateList: [{{ range .donate }}{ chain: '{{ .Chain }}', addr: '{{ .Address }}' },{{ end }}],
       geofilesModal: { visible: false },
       distroModal: { visible: false, pretty: '', tested: '' },
 
@@ -1936,6 +1988,26 @@
       // at the moment the operator asked to install rather than to check.
       openUpdateModal() {
         this.updateModal.visible = true;
+      },
+      // Opens the donate dialog, clearing any stale "copied" tick from a prior
+      // visit so the dialog never opens already claiming something was copied.
+      openDonateModal() {
+        this.donateModal.copied = -1;
+        this.donateModal.visible = true;
+      },
+      // ClipboardManager falls back to execCommand, so this works on the plain
+      // HTTP panels navigator.clipboard refuses to serve. The tick is per row
+      // and self-clears; a failed copy says so rather than silently ticking.
+      async copyDonateAddress(index, address) {
+        const ok = await ClipboardManager.copyText(address);
+        if (!ok) {
+          this.donateModal.copied = -1;
+          this.$message.error('{{ i18n "somethingWentWrong" }}');
+          return;
+        }
+        this.donateModal.copied = index;
+        clearTimeout(this.donateCopyTimer);
+        this.donateCopyTimer = setTimeout(() => { this.donateModal.copied = -1; }, 1800);
       },
       // The dialog's own OK button. Closes it first so the card's progress bar,
       // which is what reports the rest of the run, is not hidden behind a mask.
@@ -2422,6 +2494,49 @@
           }
         });
         fileInput.click();
+      },
+      // Import a stock 3x-ui (or vpn-ui) backup over the current data, keeping this
+      // panel's own address/cert/secret. Distinct from importDatabase (a like-for-like
+      // restore): the admin accounts come from the backup, so the operator re-logs-in
+      // with the imported panel's credentials afterwards.
+      importForeignDatabase() {
+        this.$confirm({
+          title: '{{ i18n "pages.index.importForeignTitle" }}',
+          content: '{{ i18n "pages.index.importForeignConfirm" }}',
+          class: themeSwitcher.currentTheme,
+          okText: '{{ i18n "confirm" }}',
+          cancelText: '{{ i18n "cancel" }}',
+          onOk: () => {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.db';
+            fileInput.addEventListener('change', async (event) => {
+              const dbFile = event.target.files[0];
+              if (!dbFile) return;
+              const formData = new FormData();
+              formData.append('db', dbFile);
+              backupModal.hide();
+              this.loading(true);
+              const uploadMsg = await HttpUtil.post('/panel/api/server/importForeignDB', formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+              });
+              this.loading(false);
+              if (!uploadMsg.success) return;
+              const r = uploadMsg.obj || {};
+              this.$message.success('{{ i18n "pages.index.importDatabaseSuccess" }} (' +
+                (r.inbounds || 0) + ' / ' + (r.clients || 0) + ' / ' + (r.admins || 0) + ')');
+              this.loading(true);
+              const restartMsg = await HttpUtil.post("/panel/setting/restartPanel");
+              this.loading(false);
+              if (restartMsg.success) {
+                this.loading(true);
+                await PromiseUtil.sleep(5000);
+                location.reload();
+              }
+            });
+            fileInput.click();
+          },
+        });
       },
       startPolling() {
         // Fallback polling mechanism

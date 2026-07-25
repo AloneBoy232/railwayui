@@ -85,6 +85,7 @@
 "expiry" = "تاریخ پایان"
 "totalQuota" = "حجم کلی"
 "individualLinks" = "لینک‌های تکی"
+"configFiles" = "فایل‌های تنظیمات"
 "active" = "فعال"
 "inactive" = "غیرفعال"
 "unlimited" = "نامحدود"
@@ -123,6 +124,9 @@
 "successLogin" = "شما با موفقیت به حساب کاربری خود وارد شدید."
 
 [pages.index]
+"donate" = "حمایت مالی"
+"donateTitle" = "حمایت از VPN-UI"
+"donateIntro" = "اگر VPN-UI برای شما مفید بوده است، کمک مالی به هر یک از این آدرس‌ها به نگهداری آن کمک می‌کند."
 "restore" = "بازیابی"
 "systemStatus" = "وضعیت سیستم"
 "title" = "نمای کلی"

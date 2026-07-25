@@ -85,6 +85,7 @@
 "expiry" = "到期"
 "totalQuota" = "總配額"
 "individualLinks" = "個別連結"
+"configFiles" = "設定檔"
 "active" = "啟用"
 "inactive" = "停用"
 "unlimited" = "無限制"
@@ -123,6 +124,9 @@
 "successLogin" = "您已成功登入您的帳戶。"
 
 [pages.index]
+"donate" = "贊助"
+"donateTitle" = "支持 VPN-UI"
+"donateIntro" = "如果 VPN-UI 對你有幫助，向以下任一地址贊助可以幫助它持續維護。"
 "restore" = "還原"
 "systemStatus" = "系統狀態"
 "title" = "系統狀態"

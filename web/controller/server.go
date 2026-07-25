@@ -92,6 +92,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/logs/:count", requireSuperAdmin(), a.getLogs)
 	g.POST("/xraylogs/:count", requireSuperAdmin(), a.getXrayLogs)
 	g.POST("/importDB", requireSuperAdmin(), a.importDB)
+	g.POST("/importForeignDB", requireSuperAdmin(), a.importForeignDB)
 	g.POST("/getNewEchCert", a.getNewEchCert)
 }
 
@@ -518,6 +519,27 @@ func (a *ServerController) importDB(c *gin.Context) {
 		return
 	}
 	jsonObj(c, I18nWeb(c, "pages.index.importDatabaseSuccess"), nil)
+}
+
+// importForeignDB imports a stock 3x-ui (or vpn-ui) backup over the current
+// database, keeping this panel's own reachability/identity settings. Unlike
+// importDB (a like-for-like restore of this panel's own backup) it is meant for
+// migrating in from another panel: it reports what landed, and because the admin
+// accounts come from the backup, the operator signs in afterwards with the
+// imported panel's login. activate=true regenerates daemon configs + restarts Xray.
+func (a *ServerController) importForeignDB(c *gin.Context) {
+	file, _, err := c.Request.FormFile("db")
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.index.readDatabaseError"), err)
+		return
+	}
+	defer file.Close()
+	report, err := a.serverService.ImportForeignDB(file, true)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.index.importDatabaseError"), err)
+		return
+	}
+	jsonObj(c, report, nil)
 }
 
 // getNewX25519Cert generates a new X25519 certificate.

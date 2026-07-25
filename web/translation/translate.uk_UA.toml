@@ -85,6 +85,7 @@
 "expiry" = "Термін дії"
 "totalQuota" = "Загальна квота"
 "individualLinks" = "Окремі посилання"
+"configFiles" = "Файли конфігурації"
 "active" = "Активна"
 "inactive" = "Неактивна"
 "unlimited" = "Безліміт"
@@ -123,6 +124,9 @@
 "successLogin" = "Ви успішно увійшли до свого облікового запису."
 
 [pages.index]
+"donate" = "Підтримати"
+"donateTitle" = "Підтримати VPN-UI"
+"donateIntro" = "Якщо VPN-UI вам корисний, пожертва на будь-яку з цих адрес допоможе його підтримувати."
 "restore" = "Відновити"
 "systemStatus" = "Стан системи"
 "title" = "Огляд"

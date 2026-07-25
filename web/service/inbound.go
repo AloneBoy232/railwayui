@@ -15,6 +15,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/util/random"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"gorm.io/gorm"
@@ -401,8 +402,15 @@ func duplicateEmailError(email string) error {
 func (s *InboundService) getAllEmailsExcludingInbound(ignoreInboundId int) ([]string, error) {
 	db := database.GetDB()
 	var emails []string
+	// COALESCE, because a client that carries no `email` key at all yields SQL NULL and
+	// scanning NULL into a string fails with "converting NULL to string is unsupported".
+	// That error propagates out of the duplicate check, so ONE malformed stored client
+	// would make every later add/edit of any client fail with "Something went wrong".
+	// Client JSON is spliced into the settings as posted (AddInboundClient works through
+	// map[string]any), so a caller that omits the field really does store it missing.
+	// An empty entry is harmless here: the callers only look up non-empty values.
 	err := db.Raw(`
-		SELECT JSON_EXTRACT(client.value, '$.email')
+		SELECT COALESCE(JSON_EXTRACT(client.value, '$.email'), '')
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
 		WHERE inbounds.id != ?
@@ -430,8 +438,13 @@ func (s *InboundService) contains(slice []string, str string) bool {
 func (s *InboundService) getAllPPPUsernames(protocol string) ([]string, error) {
 	db := database.GetDB()
 	var usernames []string
+	// COALESCE for the same reason as getAllEmailsExcludingInbound, and here it is not
+	// hypothetical: model.Client.ID is `json:"id,omitempty"`, so an account created
+	// without a username is stored with NO id key. The NULL that produced then broke this
+	// scan, and with it EVERY subsequent add/edit of a client on that protocol —
+	// "openvpn works but a second account cannot be created" reduces to this one line.
 	err := db.Raw(`
-		SELECT JSON_EXTRACT(client.value, '$.id')
+		SELECT COALESCE(JSON_EXTRACT(client.value, '$.id'), '')
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
 		WHERE inbounds.protocol = ?
@@ -730,11 +743,18 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		if err2 := json.Unmarshal([]byte(inbound.Settings), &settings); err2 == nil && settings != nil {
 			now := time.Now().Unix() * 1000
 			updatedClients := make([]model.Client, 0, len(clients))
-			for _, c := range clients {
+			for i, c := range clients {
 				if c.CreatedAt == 0 {
 					c.CreatedAt = now
 				}
 				c.UpdatedAt = now
+				// A new inbound's accounts take slots 0..n-1, which is what their
+				// positions would have given them; storing it is what keeps the address
+				// once a later delete compacts the list.
+				if c.Slot == nil && slotPoolProtocol(inbound.Protocol) {
+					slot := i
+					c.Slot = &slot
+				}
 				updatedClients = append(updatedClients, c)
 			}
 			settings["clients"] = updatedClients
@@ -992,6 +1012,13 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 						nSlice[i] = m
 					}
 				}
+				// Carry pool slots forward the same way created_at is carried: this form
+				// posts EVERY client, so without it a save would re-derive addresses from
+				// the posted order. Matched by email; a genuinely new account here takes
+				// the lowest free slot.
+				if oldClients, gerr := s.GetClients(oldInbound); gerr == nil {
+					assignSlotsToClientMaps(inbound.Protocol, oldClients, nSlice)
+				}
 				newSettings["clients"] = nSlice
 				if bs, err3 := json.MarshalIndent(newSettings, "", "  "); err3 == nil {
 					inbound.Settings = string(bs)
@@ -1221,7 +1248,11 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	// is an upper bound, so this never rejects a client the pool could actually hold.
 	if maxAcc, ok := maxVpnAccounts(oldInbound); ok {
 		existing, _ := s.GetClients(oldInbound)
-		if len(existing)+len(clients) > maxAcc {
+		// Slots can be sparse (a delete frees one without renumbering the rest), so the
+		// question is whether the slots these accounts would take fit the pool, not how
+		// many accounts there are.
+		slots := slotsForNewAccounts(existing, len(clients))
+		if len(slots) > 0 && slots[len(slots)-1] >= maxAcc {
 			return false, common.NewError(fmt.Sprintf(
 				"IP pool full for this %s inbound: it can hold at most %d account(s) at the current User Limit (%d already present). Lower the User Limit, or add another inbound.",
 				oldInbound.Protocol, maxAcc, len(existing)))
@@ -1263,6 +1294,11 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	}
 
 	oldClients := oldSettings["clients"].([]any)
+	// Give each added account its pool slot before it joins the list, from what the
+	// inbound already holds: the address must not depend on where in the list it lands.
+	if existing, gerr := s.GetClients(oldInbound); gerr == nil {
+		assignSlotsToClientMaps(oldInbound.Protocol, existing, interfaceClients)
+	}
 	oldClients = append(oldClients, interfaceClients...)
 
 	oldSettings["clients"] = oldClients
@@ -1411,6 +1447,10 @@ func (s *InboundService) buildTargetClientFromSource(source model.Client, target
 	target.Password = ""
 	target.Auth = ""
 	target.Flow = ""
+	// The address-pool slot belongs to the SOURCE inbound's pool. Carrying it over would
+	// hand the copy an address an account in the target inbound may already hold; the add
+	// path allocates a free one there instead.
+	target.Slot = nil
 
 	switch targetProtocol {
 	case model.VMESS:
@@ -1771,10 +1811,18 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	settingsClients := oldSettings["clients"].([]any)
 	// Preserve created_at and set updated_at for the replacing client
 	var preservedCreated any
+	// The account's pool slot is carried from the entry being replaced, by POSITION not
+	// email: an edit may rename the email, and an account's address must not move because
+	// its label changed. Falls back to the old list index for an unstamped row, which is
+	// the address it has been using.
+	preservedSlot := clientIndex
 	if clientIndex >= 0 && clientIndex < len(settingsClients) {
 		if oldMap, ok := settingsClients[clientIndex].(map[string]any); ok {
 			if v, ok2 := oldMap["created_at"]; ok2 {
 				preservedCreated = v
+			}
+			if v, ok2 := oldMap["slot"].(float64); ok2 && v >= 0 {
+				preservedSlot = int(v)
 			}
 		}
 	}
@@ -1785,6 +1833,9 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 			}
 			newMap["created_at"] = preservedCreated
 			newMap["updated_at"] = time.Now().Unix() * 1000
+			if slotPoolProtocol(oldInbound.Protocol) {
+				newMap["slot"] = preservedSlot
+			}
 			interfaceClients[0] = newMap
 		}
 	}
@@ -3726,7 +3777,128 @@ func (s *InboundService) MigrationRequirements() {
 
 func (s *InboundService) MigrateDB() {
 	s.MigrationRequirements()
+	s.MigrationSubIds()
+	s.MigrationAccountSlots()
 	s.MigrationRemoveOrphanedTraffics()
+}
+
+// MigrationAccountSlots stamps every pool-protocol account with the slot it is effectively
+// using today: its position in clients[]. Nothing moves on upgrade, and from then on the
+// address survives a delete somewhere earlier in the list.
+//
+// Must run before the servers start, so no allocator can read a half-stamped inbound (see
+// the call in runWebServer). Idempotent: an account that already has a slot is left alone.
+func (s *InboundService) MigrationAccountSlots() {
+	db := database.GetDB()
+	var inbounds []*model.Inbound
+	err := db.Model(model.Inbound{}).Where("protocol IN (?)", slotPoolProtocols).Find(&inbounds).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		logger.Warning("MigrationAccountSlots - reading inbounds failed: ", err)
+		return
+	}
+
+	for _, inbound := range inbounds {
+		settings := map[string]any{}
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			continue
+		}
+		clients, ok := settings["clients"].([]any)
+		if !ok {
+			continue
+		}
+		changed := false
+		for i := range clients {
+			c, ok := clients[i].(map[string]any)
+			if !ok {
+				continue
+			}
+			if v, has := c["slot"]; has {
+				if f, ok := v.(float64); ok && f >= 0 {
+					continue
+				}
+			}
+			c["slot"] = i // exactly the address it is on now
+			clients[i] = c
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		settings["clients"] = clients
+		modified, err := json.MarshalIndent(settings, "", "  ")
+		if err != nil {
+			continue
+		}
+		if err := db.Model(model.Inbound{}).Where("id = ?", inbound.Id).
+			Update("settings", string(modified)).Error; err != nil {
+			logger.Warningf("MigrationAccountSlots - inbound %d: %v", inbound.Id, err)
+		}
+	}
+}
+
+// subBackfillProtocols are the VPN protocols the subscription service started serving
+// after their accounts already existed. Their stored clients therefore predate the subId
+// the panel now mints for every account, and a client with no subId has no subscription
+// link at all: it is invisible to the sub endpoints and gets no link in the panel.
+//
+// The Xray protocols are deliberately absent. Their clients have always been given a
+// subId on creation, so an empty one there is an admin who cleared the field in the
+// client form, and minting one would undo that choice.
+var subBackfillProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wg-c", "awg", "mtproto", "ssh"}
+
+// MigrationSubIds gives every VPN-protocol account that has none its own subscription
+// id. One id per client (clients that share a subId share one subscription link, which
+// is a choice the admin makes, not something a backfill should impose), and a row is only
+// rewritten when a client was actually missing one, so the pass is idempotent.
+func (s *InboundService) MigrationSubIds() {
+	db := database.GetDB()
+	var inbounds []*model.Inbound
+	err := db.Model(model.Inbound{}).Where("protocol IN (?)", subBackfillProtocols).Find(&inbounds).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		logger.Warning("MigrationSubIds - reading inbounds failed: ", err)
+		return
+	}
+
+	for _, inbound := range inbounds {
+		settings := map[string]any{}
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			continue
+		}
+		clients, ok := settings["clients"].([]any)
+		if !ok {
+			continue
+		}
+		changed := false
+		for i := range clients {
+			c, ok := clients[i].(map[string]any)
+			if !ok {
+				continue
+			}
+			// No email means no account identity, so nothing for a subscription to
+			// report usage or expiry for.
+			if email, _ := c["email"].(string); strings.TrimSpace(email) == "" {
+				continue
+			}
+			if subId, _ := c["subId"].(string); strings.TrimSpace(subId) != "" {
+				continue
+			}
+			c["subId"] = random.Seq(16)
+			clients[i] = c
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		settings["clients"] = clients
+		modifiedSettings, err := json.MarshalIndent(settings, "", "  ")
+		if err != nil {
+			continue
+		}
+		if err := db.Model(model.Inbound{}).Where("id = ?", inbound.Id).
+			Update("settings", string(modifiedSettings)).Error; err != nil {
+			logger.Warningf("MigrationSubIds - inbound %d: %v", inbound.Id, err)
+		}
+	}
 }
 
 // ClientStatsSummary is the overview's account roll-up: how many accounts the

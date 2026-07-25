@@ -361,6 +361,37 @@ fi
 # credentials (--random); updates DO NOT, so the operator's existing port, login
 # and web path survive the upgrade.
 if [[ "$MODE" == "install" ]]; then
+    # Optional migration: import an existing 3x-ui (or vpn-ui) backup database before
+    # the panel is configured, so an operator moving over keeps their inbounds,
+    # clients, traffic and admin logins. The import preserves THIS install's own
+    # port/path/TLS/secret, so only the operator's data comes across. Honour a preset
+    # IMPORT_DB for non-interactive installs; otherwise ask on the controlling
+    # terminal. A piped install with no IMPORT_DB set skips it and starts fresh.
+    imported=""
+    import_path="${IMPORT_DB:-}"
+    if [[ -z "$import_path" && -r /dev/tty ]]; then
+        {
+            printf '%s::%s %sExisting 3x-ui data%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
+            printf '    Import inbounds, clients and traffic from a 3x-ui backup database?\n'
+            printf '    Enter the path to the .db file, or leave blank to start fresh.\n'
+            printf '  path: '
+        } > /dev/tty
+        read -r import_path < /dev/tty || import_path=""
+    fi
+    if [[ -n "$import_path" ]]; then
+        if [[ -r "$import_path" ]]; then
+            msg "Importing database from $import_path"
+            if "$DEST" import --from "$import_path"; then
+                imported="1"
+                ok "Imported existing data. You will log in with that panel's credentials."
+            else
+                warn "Import failed, continuing with a fresh database."
+            fi
+        else
+            warn "Cannot read '$import_path', continuing with a fresh database."
+        fi
+    fi
+
     # Panel transport: HTTP (default) or self-signed HTTPS. Honour PANEL_TLS when
     # preset (selfsign/https -> TLS; http -> plain); otherwise ask on the
     # controlling terminal. A piped, non-interactive install with no PANEL_TLS set
@@ -408,7 +439,11 @@ if [[ "$MODE" == "install" ]]; then
     # prompt nor installs empty credentials. The binary applies either choice with
     # the same work-safe stop/apply/restart envelope (--random / --user...--path).
     cred_mode="random"
-    if [[ -r /dev/tty ]]; then
+    if [[ "$imported" == "1" ]]; then
+        # The import brought its own admin login; randomizing now would throw it
+        # away. Keep it and just install the unit (the port was preserved too).
+        cred_mode="keep"
+    elif [[ -r /dev/tty ]]; then
         {
             printf '%s::%s %sPanel login / access%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
             printf '    %s1)%s Randomize  (port, username, password, web path) %s[default]%s\n' "$GREEN" "$R" "$D" "$R"
@@ -419,7 +454,10 @@ if [[ "$MODE" == "install" ]]; then
         [[ "$_cans" == "2" ]] && cred_mode="custom"
     fi
 
-    if [[ "$cred_mode" == "custom" ]]; then
+    if [[ "$cred_mode" == "keep" ]]; then
+        msg "Installing systemd unit (keeping the imported panel's login)"
+        "$DEST" --systemd
+    elif [[ "$cred_mode" == "custom" ]]; then
         msg "Enter panel login / access details (leave a field blank to keep the default)"
         printf '  %susername%s: ' "$BLUE" "$R" > /dev/tty; read -r  C_USER < /dev/tty || C_USER=""
         printf '  %spassword%s: ' "$BLUE" "$R" > /dev/tty; read -rs C_PASS < /dev/tty || C_PASS=""; printf '\n' > /dev/tty
@@ -455,7 +493,9 @@ fi
 hr
 msg "Deploy complete"
 if [[ "$MODE" == "install" ]]; then
-    if [[ "${cred_mode:-random}" == "custom" ]]; then
+    if [[ "${cred_mode:-random}" == "keep" ]]; then
+        act "sign in with the username / password from the panel you imported"
+    elif [[ "${cred_mode:-random}" == "custom" ]]; then
         act "your custom login (port / user / password / web path) was applied — see above"
     else
         act "the randomized login (port / user / password / web path) is printed above"

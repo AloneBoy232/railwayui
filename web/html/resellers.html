@@ -51,16 +51,14 @@
                             <a-icon type="plus-circle"></a-icon>
                             <span>{{ i18n "pages.resellers.recharge" }}</span>
                           </a-menu-item>
-                          <!-- Deleting a reseller who still owns accounts would leave those
-                               customers connecting with nobody to bill, so the accounts have to
-                               go first. The server refuses it too. -->
-                          <a-menu-item :disabled="reseller.clientCount > 0" @click="delReseller(reseller)">
-                            <a-tooltip :title="reseller.clientCount > 0 ? hasClientsText : ''">
-                              <span :style="{ color: reseller.clientCount > 0 ? undefined : '#FF4D4F' }">
-                                <a-icon type="delete"></a-icon>
-                                <span>{{ i18n "delete" }}</span>
-                              </span>
-                            </a-tooltip>
+                          <!-- A reseller that still owns accounts opens a modal asking whether to
+                               delete the accounts too or hand them to the admin; a childless one
+                               deletes straight away. -->
+                          <a-menu-item @click="delReseller(reseller)">
+                            <span :style="{ color: '#FF4D4F' }">
+                              <a-icon type="delete"></a-icon>
+                              <span>{{ i18n "delete" }}</span>
+                            </span>
                           </a-menu-item>
                         </a-menu>
                       </a-dropdown>
@@ -172,6 +170,37 @@
           </a-form-item>
         </a-form>
       </a-modal>
+
+      <a-modal id="reseller-del-modal"
+        :title="delTitle"
+        :visible="del.visible"
+        :confirm-loading="del.confirmLoading"
+        ok-text='{{ i18n "delete" }}'
+        cancel-text='{{ i18n "cancel" }}'
+        ok-type="danger"
+        :class="themeSwitcher.currentTheme"
+        :closable="true"
+        :mask-closable="false"
+        @ok="() => submitDelete()"
+        @cancel="() => del.visible = false">
+        <a-alert type="warning" show-icon :style="{ marginBottom: '16px' }">
+          <template slot="message">
+            [[ del.clientCount ]] {{ i18n "pages.resellers.deleteHasAccounts" }}
+          </template>
+        </a-alert>
+        <!-- a-radio labels are single-line with a fixed height in antd-vue 1.7.8; the
+             whiteSpace/height/lineHeight overrides let the descriptions wrap. -->
+        <a-radio-group v-model="del.mode" :style="{ display: 'flex', flexDirection: 'column', gap: '12px' }">
+          <a-radio value="keep" :style="{ whiteSpace: 'normal', height: 'auto', lineHeight: '1.4' }">
+            <span :style="{ fontWeight: 600 }">{{ i18n "pages.resellers.deleteKeep" }}</span>
+            <div class="bo-muted" :style="{ marginLeft: '24px' }">{{ i18n "pages.resellers.deleteKeepDesc" }}</div>
+          </a-radio>
+          <a-radio value="cascade" :style="{ whiteSpace: 'normal', height: 'auto', lineHeight: '1.4' }">
+            <span :style="{ fontWeight: 600, color: '#FF4D4F' }">{{ i18n "pages.resellers.deleteCascade" }}</span>
+            <div class="bo-muted" :style="{ marginLeft: '24px' }">{{ i18n "pages.resellers.deleteCascadeDesc" }}</div>
+          </a-radio>
+        </a-radio-group>
+      </a-modal>
 {{template "page/shell_end" . }}
 
 {{template "page/body_scripts" .}}
@@ -191,11 +220,17 @@
       spinning: false,
       resellers: [],
       allInbounds: [],
-      // Held as data rather than inlined in the template: a translation carrying an
-      // apostrophe would end the JS string once the browser decodes the attribute,
-      // and a thrown render leaves the whole page blank behind [v-cloak].
-      hasClientsText: '{{ i18n "pages.resellers.hasClients" }}',
       recharge: { visible: false, confirmLoading: false, id: 0, username: '', availableBytes: 0, gb: 0 },
+      // Cascade-or-keep choice for deleting a reseller that still owns accounts;
+      // mode defaults to the non-destructive 'keep'.
+      del: { visible: false, confirmLoading: false, id: 0, username: '', clientCount: 0, mode: 'keep' },
+    },
+    computed: {
+      // Built here in the <script> so Go JS-escapes the translation; an apostrophe
+      // in a locale would break it inside a :title HTML attribute (see recharge).
+      delTitle() {
+        return '{{ i18n "pages.resellers.del" }}' + ': ' + this.del.username;
+      },
     },
     methods: {
       async loadResellers(showSpin) {
@@ -278,8 +313,13 @@
         }
       },
       delReseller(reseller) {
+        // Still owns accounts: ask whether to delete them too or hand them back to
+        // the admin. Otherwise delete straight away.
         if (reseller.clientCount > 0) {
-          this.$message.error(this.hasClientsText);
+          this.del = {
+            visible: true, confirmLoading: false, id: reseller.id,
+            username: reseller.username, clientCount: reseller.clientCount, mode: 'keep',
+          };
           return;
         }
         this.$confirm({
@@ -293,6 +333,15 @@
             if (msg && msg.success) await this.loadResellers();
           },
         });
+      },
+      async submitDelete() {
+        this.del.confirmLoading = true;
+        const msg = await HttpUtil.post('/panel/resellers/del/' + this.del.id, { mode: this.del.mode });
+        this.del.confirmLoading = false;
+        if (msg && msg.success) {
+          this.del.visible = false;
+          await this.loadResellers();
+        }
       },
     },
     async mounted() {

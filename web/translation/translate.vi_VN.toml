@@ -85,6 +85,7 @@
 "expiry" = "Hết hạn"
 "totalQuota" = "Tổng hạn mức"
 "individualLinks" = "Liên kết riêng lẻ"
+"configFiles" = "Tệp cấu hình"
 "active" = "Hoạt động"
 "inactive" = "Không hoạt động"
 "unlimited" = "Không giới hạn"
@@ -123,6 +124,9 @@
 "successLogin" = "Bạn đã đăng nhập vào tài khoản thành công."
 
 [pages.index]
+"donate" = "Ủng hộ"
+"donateTitle" = "Ủng hộ VPN-UI"
+"donateIntro" = "Nếu VPN-UI hữu ích với bạn, một khoản ủng hộ tới bất kỳ địa chỉ nào dưới đây sẽ giúp duy trì dự án."
 "restore" = "Khôi phục"
 "systemStatus" = "Trạng thái hệ thống"
 "title" = "Trạng thái hệ thống"

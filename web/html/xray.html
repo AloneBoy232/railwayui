@@ -162,6 +162,7 @@
 {{template "modals/fakednsModal"}}
 {{template "modals/warpModal"}}
 {{template "modals/warpSocksModal"}}
+{{template "modals/sshOutboundModal"}}
 {{template "modals/nordModal"}}
 <script>
   const rulesColumns = [
@@ -1086,6 +1087,9 @@
       },
       showNord() {
         nordModal.show();
+      },
+      showSshOutbound() {
+        sshOutboundModal.show();
       },
       async loadCustomGeoAliases() {
         try {

@@ -103,6 +103,23 @@ var knownMissing = keySet(
 	"pages.settings.service.startDesc", "pages.settings.service.status",
 	"pages.settings.service.statusDesc", "pages.settings.service.unit",
 	"pages.settings.service.unitDesc", "pages.settings.serviceSettings",
+
+	"pages.resellers.deleteHasAccounts", "pages.resellers.deleteKeep",
+	"pages.resellers.deleteKeepDesc", "pages.resellers.deleteCascade",
+	"pages.resellers.deleteCascadeDesc",
+
+	"pages.index.importForeignTitle", "pages.index.importForeignDesc",
+	"pages.index.importForeignConfirm",
+
+	"pages.xray.outbound.sshOutHint", "pages.xray.outbound.sshOutNone",
+	"pages.xray.outbound.sshOutAdd", "pages.xray.outbound.sshOutTag",
+	"pages.xray.outbound.sshOutSocksPort", "pages.xray.outbound.sshOutAddress",
+	"pages.xray.outbound.sshOutPort", "pages.xray.outbound.sshOutUsername",
+	"pages.xray.outbound.sshOutAuth", "pages.xray.outbound.sshOutPassword",
+	"pages.xray.outbound.sshOutKey", "pages.xray.outbound.sshOutKeep",
+	"pages.xray.outbound.sshOutPassphrase", "pages.xray.outbound.sshOutKnownHost",
+	"pages.xray.outbound.sshOutStatus", "pages.xray.outbound.sshOutUp",
+	"pages.xray.outbound.sshOutDown", "pages.xray.outbound.sshOutSaved",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").
