@@ -129,6 +129,97 @@ func TestGetInboundsForResellerHidesOtherPeoplesClients(t *testing.T) {
 	}
 }
 
+// The Inbounds page sums the INBOUND's own up/down/allTime into the "Total usage" and
+// "All-time total usage" band above the table. Those columns are panel-wide, so
+// filtering the client rows alone left a reseller reading the admin's traffic as
+// their own.
+func TestGetInboundsForResellerScopesTheInboundTotals(t *testing.T) {
+	f := newResellerFixture(t, "resellers-client")
+	db := database.GetDB()
+
+	// What the counters really look like: the inbound row carries both accounts, and
+	// all_time is ahead of up+down because a reset rewinds one and not the other.
+	if err := db.Model(&xray.ClientTraffic{}).Where("email = ?", "admins-client").
+		Updates(map[string]any{"up": 700, "down": 300, "all_time": 4000}).Error; err != nil {
+		t.Fatalf("seed the admin's usage: %v", err)
+	}
+	if err := db.Model(&xray.ClientTraffic{}).Where("email = ?", "resellers-client").
+		Updates(map[string]any{"up": 20, "down": 5, "all_time": 90}).Error; err != nil {
+		t.Fatalf("seed the reseller's usage: %v", err)
+	}
+	if err := db.Model(&model.Inbound{}).Where("id = ?", f.inbound.Id).
+		Updates(map[string]any{"up": 720, "down": 305, "all_time": 4090}).Error; err != nil {
+		t.Fatalf("seed the inbound totals: %v", err)
+	}
+
+	inbounds, err := f.svc.GetInboundsFor(f.reseller)
+	if err != nil {
+		t.Fatalf("GetInboundsFor: %v", err)
+	}
+	if len(inbounds) != 1 {
+		t.Fatalf("got %d inbounds; want the granted one", len(inbounds))
+	}
+	got := inbounds[0]
+	if got.Up != 20 || got.Down != 5 || got.AllTime != 90 {
+		t.Errorf("up/down/allTime = %d/%d/%d; want 20/5/90, the reseller's own accounts and nobody else's",
+			got.Up, got.Down, got.AllTime)
+	}
+
+	// The admin sharing the same inbound still sees the whole thing.
+	inbounds, err = f.svc.GetInboundsFor(f.admin)
+	if err != nil {
+		t.Fatalf("GetInboundsFor(admin): %v", err)
+	}
+	if got := inbounds[0]; got.Up != 720 || got.Down != 305 || got.AllTime != 4090 {
+		t.Errorf("the admin's totals were rescoped too: up/down/allTime = %d/%d/%d; want 720/305/4090",
+			got.Up, got.Down, got.AllTime)
+	}
+}
+
+// A reseller with nothing on an inbound has used nothing on it, however busy the
+// inbound is. This is the case that used to show the panel's entire traffic.
+func TestGetInboundsForResellerWithNoAccountsHasNoUsage(t *testing.T) {
+	f := newResellerFixture(t)
+	if err := database.GetDB().Model(&model.Inbound{}).Where("id = ?", f.inbound.Id).
+		Updates(map[string]any{"up": 720, "down": 305, "all_time": 4090}).Error; err != nil {
+		t.Fatalf("seed the inbound totals: %v", err)
+	}
+
+	inbounds, err := f.svc.GetInboundsFor(f.reseller)
+	if err != nil {
+		t.Fatalf("GetInboundsFor: %v", err)
+	}
+	if got := inbounds[0]; got.Up != 0 || got.Down != 0 || got.AllTime != 0 {
+		t.Errorf("up/down/allTime = %d/%d/%d; want all zero", got.Up, got.Down, got.AllTime)
+	}
+}
+
+// all_time is only backfilled for rows the panel has written since the column existed.
+// The page falls back to up+down for the rest, and the scoped total has to fall back
+// the same way or a reseller's band reads lower than the rows it is summing.
+func TestRescopedAllTimeFallsBackToUpPlusDown(t *testing.T) {
+	s := &InboundService{}
+	inbound := &model.Inbound{
+		Id:       7,
+		Settings: sharedInboundSettings,
+		ClientStats: []xray.ClientTraffic{
+			{Email: "admins-client", Up: 700, Down: 300, AllTime: 4000},
+			{Email: "resellers-client", Up: 20, Down: 5}, // pre-dates all_time
+			{Email: "Resellers-Client-2", Up: 1, Down: 2, AllTime: 30},
+		},
+	}
+	s.FilterInboundForReseller(inbound, map[string]bool{
+		"resellers-client": true, "resellers-client-2": true,
+	})
+
+	if inbound.Up != 21 || inbound.Down != 7 {
+		t.Errorf("up/down = %d/%d; want 21/7", inbound.Up, inbound.Down)
+	}
+	if inbound.AllTime != 55 { // (20+5) + 30
+		t.Errorf("allTime = %d; want 55, the legacy row counted as up+down", inbound.AllTime)
+	}
+}
+
 // The filtering rewrites the blob, so everything that is NOT a client has to come
 // back out of it unchanged: protocol settings, external proxies, and keys this panel
 // has never heard of.

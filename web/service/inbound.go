@@ -112,6 +112,7 @@ func (s *InboundService) FilterInboundForReseller(inbound *model.Inbound, ownedE
 		return
 	}
 	inbound.ClientStats = s.FilterClientTrafficsForReseller(inbound.ClientStats, ownedEmails)
+	rescopeInboundTraffic(inbound)
 	filtered, err := filterSettingsClients(inbound.Settings, ownedEmails)
 	if err != nil {
 		// Settings we cannot parse are settings we cannot prove are safe to hand
@@ -121,6 +122,39 @@ func (s *InboundService) FilterInboundForReseller(inbound *model.Inbound, ownedE
 		return
 	}
 	inbound.Settings = filtered
+}
+
+// rescopeInboundTraffic rewrites an inbound's OWN traffic counters to cover only the
+// client rows left on it, and is meaningful solely after the reseller filter has run.
+//
+// Up/Down/AllTime on the inbound row are panel-wide: they are the sum over every
+// account on the inbound, whoever sold it. The Inbounds page renders them twice, once
+// per row and once as the "Total usage" / "All-time total usage" band above the table,
+// so a reseller handed the raw values reads the whole panel's traffic as their own.
+// Filtering ClientStats does not touch them, which is why the band stayed wrong long
+// after the client table was correctly scoped.
+//
+// Safe to write because a reseller can never send these back: the role holds no
+// PermEditInbound, so /add and /update/:id (the only routes that persist an inbound's
+// counters, and the only ones the page posts up/down to) are refused for them.
+//
+// The AllTime fallback mirrors what the page does for rows written before all_time
+// existed (`allTime || up + down`), so a reseller's band and an admin's answer the
+// same question rather than differing on legacy data.
+func rescopeInboundTraffic(inbound *model.Inbound) {
+	var up, down, allTime int64
+	for _, stat := range inbound.ClientStats {
+		up += stat.Up
+		down += stat.Down
+		if stat.AllTime > 0 {
+			allTime += stat.AllTime
+		} else {
+			allTime += stat.Up + stat.Down
+		}
+	}
+	inbound.Up = up
+	inbound.Down = down
+	inbound.AllTime = allTime
 }
 
 // FilterClientTrafficsForReseller narrows a panel-wide set of traffic rows to one
@@ -200,11 +234,23 @@ func filterSettingsClients(settings string, ownedEmails map[string]bool) (string
 	return string(out), nil
 }
 
+// inboundDisplayOrder is the order the panel's inbound list is shown in: the
+// positions the operator dragged the rows into, then id for everything they have not
+// touched.
+//
+// The CASE is what lets sort_order default to 0 without disturbing a live panel. A
+// plain "sort_order, id" would sort every unpositioned row (0) ABOVE the positioned
+// ones, so the first drag on a 50-inbound panel would appear to fling 49 rows to the
+// bottom, and every inbound added afterwards would jump to the top. Sorting 0 last
+// instead means: an upgraded panel where every row is still 0 keeps exactly the id
+// order it has always had, and a new inbound appends to the end as it always did.
+const inboundDisplayOrder = "CASE WHEN sort_order > 0 THEN 0 ELSE 1 END, sort_order, id"
+
 // getInboundsWhere loads inbounds by id, or all of them when ids is nil.
 func (s *InboundService) getInboundsWhere(ids []int) ([]*model.Inbound, error) {
 	db := database.GetDB()
 	var inbounds []*model.Inbound
-	q := db.Model(model.Inbound{}).Preload("ClientStats")
+	q := db.Model(model.Inbound{}).Preload("ClientStats").Order(inboundDisplayOrder)
 	if ids != nil {
 		q = q.Where("id IN (?)", ids)
 	}
@@ -232,6 +278,89 @@ func (s *InboundService) getInboundsWhere(ids []int) ([]*model.Inbound, error) {
 		}
 	}
 	return inbounds, nil
+}
+
+// ReorderInbounds moves the named inbounds into the given order and leaves every
+// other inbound where it is. Display only: nothing here reaches Xray, so no caller
+// needs a restart afterwards.
+//
+// ids is the list AS THE CALLER SEES IT, which for anyone but a super admin is a
+// subset of the panel. That is why the ids are not simply renumbered 1..N: doing so
+// would renumber them over positions held by inbounds the caller cannot see and
+// reshuffle another admin's table as a side effect. Instead the SLOTS the named
+// inbounds currently occupy in the panel-wide order are collected, and re-filled in
+// the requested order. Exactly the rows named move, into positions they already held
+// between them.
+//
+// Ownership is the CALLER's to prove, not this function's: like every other route
+// whose targets arrive in the body, the controller checks the ids against the caller's
+// grants first (see callerOwnsInbounds).
+func (s *InboundService) ReorderInbounds(ids []int) error {
+	if len(ids) < 2 {
+		// One row cannot change places with itself, and an empty list has nothing to
+		// say. Both are a no-op rather than an error: the page can fire a reorder for
+		// a drag that landed where it started.
+		return nil
+	}
+	db := database.GetDB()
+	var all []*model.Inbound
+	if err := db.Model(model.Inbound{}).Select("id", "sort_order").
+		Order(inboundDisplayOrder).Find(&all).Error; err != nil {
+		return err
+	}
+
+	// Every inbound's CURRENT position, 1-based and panel-wide. Positions rather than
+	// stored sort_order values, because those start out 0 for every row: without
+	// resolving them to positions first, every inbound would share slot 0 and the
+	// arithmetic below would collapse.
+	position := make(map[int]int, len(all))
+	for i, inbound := range all {
+		position[inbound.Id] = i + 1
+	}
+
+	slots := make([]int, 0, len(ids))
+	seen := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		p, ok := position[id]
+		if !ok {
+			return common.NewError("reorder: no such inbound: ", id)
+		}
+		if seen[id] {
+			return common.NewError("reorder: inbound listed twice: ", id)
+		}
+		seen[id] = true
+		slots = append(slots, p)
+	}
+	sort.Ints(slots)
+
+	want := make(map[int]int, len(ids))
+	for i, id := range ids {
+		want[id] = slots[i]
+	}
+
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	for _, inbound := range all {
+		newOrder, moved := want[inbound.Id]
+		if !moved {
+			// Pinned where it already sits. This is what converts a panel full of
+			// zeroes into real positions on the first reorder: leave the untouched
+			// rows at 0 and they would all sort below the ones that just got a
+			// position, which is the drag flinging rows to the bottom.
+			newOrder = position[inbound.Id]
+		}
+		if inbound.SortOrder == newOrder {
+			continue
+		}
+		if err := tx.Model(model.Inbound{}).Where("id = ?", inbound.Id).
+			Update("sort_order", newOrder).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit().Error
 }
 
 // GetAllInbounds retrieves all inbounds from the database.
@@ -887,6 +1016,26 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 	}
 
 	return needRestart, db.Delete(model.Inbound{}, id).Error
+}
+
+// LoadClientStats fills in an inbound's traffic rows, for the callers that fetched the
+// row through GetInbound (which does not preload them) and still need them.
+//
+// Deliberately not folded into GetInbound: that one is on every write path in this
+// service, and none of them read ClientStats, so the join would be paid dozens of
+// times per request for nothing.
+func (s *InboundService) LoadClientStats(inbound *model.Inbound) error {
+	if inbound == nil {
+		return nil
+	}
+	var stats []xray.ClientTraffic
+	err := database.GetDB().Model(xray.ClientTraffic{}).
+		Where("inbound_id = ?", inbound.Id).Find(&stats).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
+	}
+	inbound.ClientStats = stats
+	return nil
 }
 
 func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {

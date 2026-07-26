@@ -222,12 +222,13 @@
                         }}</a-radio-button>
                     </a-radio-group>
                   </div>
-                  <a-table :columns="isMobile ? mobileColumns : columns"
+                  <a-table-sortable :columns="isMobile ? mobileColumns : columns"
                     :row-key="dbInbound => dbInbound.id"
                     :data-source="searchedInbounds"
                     :scroll="isMobile ? {} : { x: 1000 }"
                     :pagination=pagination(searchedInbounds)
                     :expanded-row-keys="expandedRowKeys"
+                    v-on:onSort="moveInboundByDrag"
                     v-on="{ expandedRowsChange: keys => { expandedRowKeys = keys; } }"
                     :expand-icon-as-cell="false" :expand-row-by-click="false"
                     :expand-icon-column-index="0" :indent-size="0"
@@ -243,94 +244,125 @@
                       <a-checkbox :checked="isInboundSel(dbInbound.id)"
                         @change="e => toggleInboundSel(dbInbound, e.target.checked)"></a-checkbox>
                     </template>
-                    <template slot="action" slot-scope="text, dbInbound">
-                      <a-dropdown :trigger="['click']">
-                        <a-icon @click="e => e.preventDefault()" type="more"
-                          :style="{ fontSize: '20px', textDecoration: 'solid' }"></a-icon>
-                        <a-menu slot="overlay"
-                          @click="a => clickAction(a, dbInbound)"
-                          :theme="themeSwitcher.currentTheme">
-                          <a-menu-item key="edit">
-                            <a-icon type="edit"></a-icon>
-                            {{ i18n "edit" }}
-                          </a-menu-item>
-                          <a-menu-item key="qrcode"
-                            v-if="(dbInbound.isSS && !dbInbound.toInbound().isSSMultiUser) || dbInbound.isWireguard">
-                            <a-icon type="qrcode"></a-icon>
-                            {{ i18n "qrCode" }}
-                          </a-menu-item>
-                          <template v-if="dbInbound.isMultiUser()">
-                            <a-menu-item key="addClient"
-                              v-if="!(dbInbound.isIkev2SingleClient() && (getInboundClients(dbInbound) || []).length >= 1)">
-                              <a-icon type="user-add"></a-icon>
-                              {{ i18n "pages.client.add"}}
+                    <template slot="action" slot-scope="text, dbInbound, index">
+                      <!-- Both controls on one line. The cell is narrow enough that
+                           the handle and the menu dot wrap onto two rows if they are
+                           left as plain inline content. -->
+                      <span class="bo-row-actions">
+                        <!-- Drag only while the list on screen IS the list in the
+                             model. Under a search, a filter or pagination the row
+                             index the drag reports addresses a different array than
+                             the one being reordered, so the handle steps aside and
+                             the menu below (which resolves rows by id) is the way to
+                             move things. -->
+                        <a-table-sort-trigger v-if="canDragInbounds"
+                          :item-index="index"></a-table-sort-trigger>
+                        <a-dropdown :trigger="['click']">
+                          <a-icon @click="e => e.preventDefault()" type="more"
+                            :style="{ fontSize: '20px', textDecoration: 'solid' }"></a-icon>
+                          <a-menu slot="overlay"
+                            @click="a => clickAction(a, dbInbound)"
+                            :theme="themeSwitcher.currentTheme">
+                            <template v-if="canReorderInbounds">
+                              <a-menu-item key="moveTop"
+                                v-if="inboundPosition(dbInbound) > 0">
+                                <a-icon type="vertical-align-top"></a-icon>
+                                {{ i18n "pages.xray.rules.first" }}
+                              </a-menu-item>
+                              <a-menu-item key="moveUp"
+                                v-if="inboundPosition(dbInbound) > 0">
+                                <a-icon type="arrow-up"></a-icon>
+                                {{ i18n "pages.xray.rules.up" }}
+                              </a-menu-item>
+                              <a-menu-item key="moveDown"
+                                v-if="inboundPosition(dbInbound) < dbInbounds.length - 1">
+                                <a-icon type="arrow-down"></a-icon>
+                                {{ i18n "pages.xray.rules.down" }}
+                              </a-menu-item>
+                              <a-menu-divider></a-menu-divider>
+                            </template>
+                            <a-menu-item key="edit">
+                              <a-icon type="edit"></a-icon>
+                              {{ i18n "edit" }}
                             </a-menu-item>
-                            <a-menu-item key="addBulkClient" v-if="!dbInbound.isIkev2SingleClient()">
-                              <a-icon type="usergroup-add"></a-icon>
-                              {{ i18n "pages.client.bulk"}}
+                            <a-menu-item key="qrcode"
+                              v-if="(dbInbound.isSS && !dbInbound.toInbound().isSSMultiUser) || dbInbound.isWireguard">
+                              <a-icon type="qrcode"></a-icon>
+                              {{ i18n "qrCode" }}
                             </a-menu-item>
-                            <a-menu-item key="copyClients" v-if="!dbInbound.isIkev2SingleClient()">
+                            <template v-if="dbInbound.isMultiUser()">
+                              <a-menu-item key="addClient"
+                                v-if="!(dbInbound.isIkev2SingleClient() && (getInboundClients(dbInbound) || []).length >= 1)">
+                                <a-icon type="user-add"></a-icon>
+                                {{ i18n "pages.client.add"}}
+                              </a-menu-item>
+                              <a-menu-item key="addBulkClient" v-if="!dbInbound.isIkev2SingleClient()">
+                                <a-icon type="usergroup-add"></a-icon>
+                                {{ i18n "pages.client.bulk"}}
+                              </a-menu-item>
+                              <a-menu-item key="copyClients" v-if="!dbInbound.isIkev2SingleClient()">
+                                <a-icon type="copy"></a-icon>
+                                {{ i18n "pages.client.copyFromInbound"}}
+                              </a-menu-item>
+                              <a-menu-item key="resetClients">
+                                <a-icon type="file-done"></a-icon>
+                                {{ i18n
+                                "pages.inbounds.resetInboundClientTraffics"}}
+                              </a-menu-item>
+                              <a-menu-item key="export">
+                                <a-icon type="export"></a-icon>
+                                {{ i18n "pages.inbounds.export"}}
+                              </a-menu-item>
+                              <a-menu-item key="subs" v-if="subSettings.enable">
+                                <a-icon type="export"></a-icon>
+                                {{ i18n "pages.inbounds.export"}} - {{ i18n
+                                "pages.settings.subSettings" }}
+                              </a-menu-item>
+                              <a-menu-item key="exportTxt">
+                                <a-icon type="file-text"></a-icon>
+                                {{ i18n "pages.inbounds.exportTxt" }}
+                              </a-menu-item>
+                              <a-menu-item key="exportPdf">
+                                <a-icon type="file-pdf"></a-icon>
+                                {{ i18n "pages.inbounds.exportPdf" }}
+                              </a-menu-item>
+                              <a-menu-item key="delDepletedClients"
+                                :style="{ color: 'var(--error)' }">
+                                <a-icon type="rest"></a-icon>
+                                {{ i18n "pages.inbounds.delDepletedClients" }}
+                              </a-menu-item>
+                            </template>
+                            <template v-else>
+                              <a-menu-item key="showInfo">
+                                <a-icon type="info-circle"></a-icon>
+                                {{ i18n "info"}}
+                              </a-menu-item>
+                            </template>
+                            <a-menu-item key="clipboard">
                               <a-icon type="copy"></a-icon>
-                              {{ i18n "pages.client.copyFromInbound"}}
+                              {{ i18n "pages.inbounds.exportInbound" }}
                             </a-menu-item>
-                            <a-menu-item key="resetClients">
-                              <a-icon type="file-done"></a-icon>
-                              {{ i18n
-                              "pages.inbounds.resetInboundClientTraffics"}}
+                            <a-menu-item key="resetTraffic">
+                              <a-icon type="retweet"></a-icon> {{ i18n
+                              "pages.inbounds.resetTraffic" }}
                             </a-menu-item>
-                            <a-menu-item key="export">
-                              <a-icon type="export"></a-icon>
-                              {{ i18n "pages.inbounds.export"}}
+                            <a-menu-item key="clone">
+                              <a-icon type="block"></a-icon> {{ i18n
+                              "pages.inbounds.clone"}}
                             </a-menu-item>
-                            <a-menu-item key="subs" v-if="subSettings.enable">
-                              <a-icon type="export"></a-icon>
-                              {{ i18n "pages.inbounds.export"}} - {{ i18n
-                              "pages.settings.subSettings" }}
+                            <a-menu-item key="delete">
+                              <span :style="{ color: 'var(--error)' }">
+                                <a-icon type="delete"></a-icon> {{ i18n "delete"}}
+                              </span>
                             </a-menu-item>
-                            <a-menu-item key="exportTxt">
-                              <a-icon type="file-text"></a-icon>
-                              {{ i18n "pages.inbounds.exportTxt" }}
+                            <a-menu-item v-if="isMobile">
+                              <a-switch size="small" v-model="dbInbound.enable"
+                                @change="switchEnable(dbInbound.id,dbInbound.enable)"></a-switch>
+                              {{ i18n "pages.inbounds.enable" }}
                             </a-menu-item>
-                            <a-menu-item key="exportPdf">
-                              <a-icon type="file-pdf"></a-icon>
-                              {{ i18n "pages.inbounds.exportPdf" }}
-                            </a-menu-item>
-                            <a-menu-item key="delDepletedClients"
-                              :style="{ color: 'var(--error)' }">
-                              <a-icon type="rest"></a-icon>
-                              {{ i18n "pages.inbounds.delDepletedClients" }}
-                            </a-menu-item>
-                          </template>
-                          <template v-else>
-                            <a-menu-item key="showInfo">
-                              <a-icon type="info-circle"></a-icon>
-                              {{ i18n "info"}}
-                            </a-menu-item>
-                          </template>
-                          <a-menu-item key="clipboard">
-                            <a-icon type="copy"></a-icon>
-                            {{ i18n "pages.inbounds.exportInbound" }}
-                          </a-menu-item>
-                          <a-menu-item key="resetTraffic">
-                            <a-icon type="retweet"></a-icon> {{ i18n
-                            "pages.inbounds.resetTraffic" }}
-                          </a-menu-item>
-                          <a-menu-item key="clone">
-                            <a-icon type="block"></a-icon> {{ i18n
-                            "pages.inbounds.clone"}}
-                          </a-menu-item>
-                          <a-menu-item key="delete">
-                            <span :style="{ color: 'var(--error)' }">
-                              <a-icon type="delete"></a-icon> {{ i18n "delete"}}
-                            </span>
-                          </a-menu-item>
-                          <a-menu-item v-if="isMobile">
-                            <a-switch size="small" v-model="dbInbound.enable"
-                              @change="switchEnable(dbInbound.id,dbInbound.enable)"></a-switch>
-                            {{ i18n "pages.inbounds.enable" }}
-                          </a-menu-item>
-                        </a-menu>
-                      </a-dropdown>
+                          </a-menu>
+                        </a-dropdown>
+                      </span>
                     </template>
                     <template slot="port" slot-scope="text, dbInbound">
                       <template v-if="dbInbound.isOpenvpn">
@@ -798,7 +830,7 @@
                         {{template "component/aClientTable"}}
                       </a-table>
                     </template>
-                  </a-table>
+                  </a-table-sortable>
                 </a-space>
               </a-card>
             </a-col>
@@ -893,6 +925,7 @@
 {{template "component/aThemeSwitch" .}}
 {{template "component/aCustomStatistic" .}}
 {{template "component/aPersianDatepicker" .}}
+{{template "component/aTableSortable" .}}
 {{template "modals/inboundModal"}}
 {{template "modals/promptModal"}}
 {{template "modals/qrcodeModal"}}
@@ -1921,6 +1954,63 @@
           case "exportPdf":
             this.exportPdf(this.inboundTargets(dbInbound), dbInbound.remark);
             break;
+          case "moveTop":
+            this.moveInbound(this.inboundPosition(dbInbound), 0);
+            break;
+          case "moveUp":
+            this.moveInbound(this.inboundPosition(dbInbound), this.inboundPosition(dbInbound) - 1);
+            break;
+          case "moveDown":
+            this.moveInbound(this.inboundPosition(dbInbound), this.inboundPosition(dbInbound) + 1);
+            break;
+        }
+      },
+      // Where this inbound sits in the real list, which is dbInbounds and never
+      // searchedInbounds: the table may be showing a search result, a filter or one
+      // page, and a position taken from any of those addresses the wrong row.
+      inboundPosition(dbInbound) {
+        return this.dbInbounds.findIndex(row => row.id === dbInbound.id);
+      },
+      // The drag handle's drop, whose indexes are positions in the rendered table.
+      // canDragInbounds only lets the handle exist while that table IS dbInbounds
+      // unabridged, so the two agree.
+      moveInboundByDrag(oldIndex, newIndex) {
+        // A drop that never moved: the component emits on every drop, and a null
+        // target spliced as-is coerces to 0 and would fling the row to the top.
+        if (newIndex === null || newIndex === undefined) return;
+        this.moveInbound(oldIndex, newIndex);
+      },
+      // Move one inbound, then tell the server the whole new order. The list is sent
+      // whole rather than as a "move" because the server holds positions for inbounds
+      // this admin may not even see, and reconciling one move against those is its
+      // job, not the browser's.
+      async moveInbound(oldIndex, newIndex) {
+        if (!this.canReorderInbounds) return;
+        const last = this.dbInbounds.length - 1;
+        if (oldIndex < 0 || oldIndex > last) return;
+        newIndex = Math.min(Math.max(newIndex, 0), last);
+        if (oldIndex === newIndex) return;
+
+        // Applied locally first so the row lands under the cursor immediately: the
+        // authoritative order arrives back over the websocket a moment later, and a
+        // table that waits for it lets go of the row and then jumps.
+        const reordered = this.dbInbounds.slice();
+        reordered.splice(newIndex, 0, reordered.splice(oldIndex, 1)[0]);
+        this.dbInbounds.splice(0, this.dbInbounds.length, ...reordered);
+        if (this.enableFilter) {
+          this.filterInbounds();
+        } else {
+          this.searchInbounds(this.searchKey);
+        }
+
+        const ids = this.dbInbounds.map(row => row.id);
+        const msg = await HttpUtil.post('/panel/api/inbounds/reorder',
+          { data: JSON.stringify(ids) });
+        if (!msg.success) {
+          // Refused or failed: the local list is now a lie, so go and get the truth
+          // rather than leaving the operator looking at an order the panel does not
+          // have.
+          await this.getDBInbounds();
         }
       },
       downloadOvpn(dbInboundId, proto) {
@@ -2843,6 +2933,23 @@
       }
     },
     computed: {
+      // Whether to offer reordering at all. The order is the PANEL's and shared by
+      // every admin, so it is gated on editInbound, which a reseller never holds.
+      // Presentation only: /reorder re-checks the bit and the grants.
+      canReorderInbounds() {
+        return !!PERMS.editInbound && this.dbInbounds.length > 1;
+      },
+      // Whether the DRAG HANDLE specifically can be trusted. It reports a position in
+      // the table as rendered, and the reorder applies it to dbInbounds, so it is only
+      // offered while those are the same sequence: no search, no filter, and no
+      // pagination hiding rows on another page. The menu items have no such limit,
+      // which is why they exist.
+      canDragInbounds() {
+        return this.canReorderInbounds
+          && ObjectUtil.isEmpty(this.searchKey)
+          && !(this.enableFilter && !ObjectUtil.isEmpty(this.filterBy))
+          && this.pagination(this.searchedInbounds) === false;
+      },
       // The reseller's own remaining balance, read off the reactive copy in data
       // rather than the RESELLER global. The global is server-rendered with the
       // page, so it is correct on first paint and stale straight after the first
@@ -2901,6 +3008,25 @@
     .bo-content > .ant-spin-nested-loading > div > .ant-spin {
       left: 50vw !important;
     }
+  }
+
+  /* The drag handle shares the row's narrow action cell with the ... menu. They
+     are the same weight and colour, so they need a gap to read as two controls,
+     and the gap is what pushes them past the cell width and onto two lines
+     unless the pair is laid out rather than left as inline content. (The
+     routing-rules table gets both for free from the row number printed between
+     them, which this table has no room for.) */
+  .inbounds-page .bo-row-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+  .inbounds-page .sortable-icon {
+    opacity: 0.65;
+  }
+  .inbounds-page .sortable-icon:hover {
+    opacity: 1;
   }
 </style>
 {{ template "page/body_end" .}}

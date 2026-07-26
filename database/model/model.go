@@ -204,6 +204,21 @@ type Inbound struct {
 	LastTrafficResetTime int64                `json:"lastTrafficResetTime" form:"lastTrafficResetTime" gorm:"default:0"`                               // Last traffic reset timestamp
 	ClientStats          []xray.ClientTraffic `gorm:"foreignKey:InboundId;references:Id" json:"clientStats" form:"clientStats"`                        // Client traffic statistics
 
+	// SortOrder is where this inbound sits in the panel's list, and nothing else. It
+	// never reaches Xray, no protocol reads it, and the panel behaves identically
+	// whatever it holds: the whole feature is the operator arranging their own table.
+	//
+	// 0 means "never positioned", and sorts LAST rather than first (see
+	// inboundDisplayOrder), which is what makes the column safe to add to a live
+	// panel: every existing row stays at 0 and keeps the id order it has always had,
+	// and a newly added inbound appends to the end exactly as it used to.
+	//
+	// Deliberately has no form tag. UpdateInbound copies the editable fields one by
+	// one onto the row it loaded, so a field that is not in that list survives an
+	// edit; a form tag here would instead let the inbound edit form bind an absent
+	// value and silently reset the position to 0 on every save.
+	SortOrder int `json:"sortOrder" gorm:"default:0"`
+
 	// Traffic Multiplier: weight a client's usage once they pass a threshold. Below
 	// TrafficMultiplierAfter traffic counts 1:1; past it each byte counts
 	// TrafficMultiplier times against the client's quota. Applies to every protocol.

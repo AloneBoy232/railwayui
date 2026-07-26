@@ -64,17 +64,41 @@
           drop: (e) => this.dropHandler(e),
         },
         scopedSlots: this.$scopedSlots,
-        locale: { 
-          filterConfirm: `{{ i18n "confirm" }}`, 
-          filterReset: `{{ i18n "reset" }}`, 
-          emptyText: `{{ i18n "noData" }}` 
+        locale: {
+          filterConfirm: `{{ i18n "confirm" }}`,
+          filterReset: `{{ i18n "reset" }}`,
+          emptyText: `{{ i18n "noData" }}`
         }
-      }, this.$slots.default,)
+      }, this.forwardedChildren(createElement))
     },
     created() {
       this.$memoSort = {};
     },
     methods: {
+      // Every slot handed to this wrapper, passed down as children of the a-table
+      // underneath.
+      //
+      // NOT just $slots.default. A column declared with `slots: { title: 'x' }` is
+      // resolved by a-table out of ITS OWN $slots (see updateColumns in
+      // ant-design-vue's table/index.jsx), and $slots is built from the children a
+      // component is given, never from the scopedSlots passed alongside them. So a
+      // wrapper forwarding only the default slot silently drops every named one: the
+      // Inbounds table's select-all header checkbox rendered as an empty cell.
+      //
+      // Each named slot has to be re-wrapped in a <template slot="name"> rather than
+      // spread in flat. Vue's resolveSlots UNWRAPS a <template slot="x">, keeping its
+      // children and discarding the wrapper that carried the name, so what arrives
+      // here is nameless: forwarded as-is it lands in the a-table's default slot,
+      // which is exactly as lost. Rebuilding the wrapper puts the name back where the
+      // next resolveSlots looks for it.
+      forwardedChildren(h) {
+        const children = [...(this.$slots.default || [])];
+        for (const name of Object.keys(this.$slots)) {
+          if (name === 'default') continue;
+          children.push(h('template', { slot: name }, this.$slots[name]));
+        }
+        return children;
+      },
       isDragging() {
         const currentIndex = this.sortingElementIndex;
         return currentIndex !== null && currentIndex !== undefined;

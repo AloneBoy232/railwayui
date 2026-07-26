@@ -255,6 +255,61 @@ func TestCrossAdminIsolation(t *testing.T) {
 		}
 	})
 
+	// The list's display order is stored panel-wide and shared by every admin, so a
+	// reorder naming someone else's inbound would move a row in THEIR table. The ids
+	// arrive in the body, where no route middleware can see them.
+	t.Run("reorder cannot name another admin's inbound", func(t *testing.T) {
+		f := newIdorFixture(t)
+		db := database.GetDB()
+		// A second inbound for Reza, so he has a list of his own to rearrange.
+		rezaSecond := &model.Inbound{
+			UserId: f.reza.Id, Tag: "inbound-41003", Port: 41003, Protocol: model.VMESS,
+			Enable: true, Settings: `{"clients":[]}`,
+		}
+		if err := db.Create(rezaSecond).Error; err != nil {
+			t.Fatalf("create inbound: %v", err)
+		}
+		if err := db.Create(&model.InboundAccess{UserId: f.reza.Id, InboundId: rezaSecond.Id}).Error; err != nil {
+			t.Fatalf("grant access: %v", err)
+		}
+
+		order := func(id int) int {
+			ib := &model.Inbound{}
+			if err := db.Where("id = ?", id).First(ib).Error; err != nil {
+				t.Fatalf("reload inbound %d: %v", id, err)
+			}
+			return ib.SortOrder
+		}
+
+		// Ali's inbound in the list: refused whole, and nothing is written.
+		payload, _ := json.Marshal([]int{f.aliInbound.Id, rezaSecond.Id, f.rezaInbound.Id})
+		f.as(t, f.reza, http.MethodPost, "/panel/api/inbounds/reorder",
+			url.Values{"data": {string(payload)}}.Encode())
+		if order(f.aliInbound.Id) != 0 || order(f.rezaInbound.Id) != 0 {
+			t.Error("a reorder naming another admin's inbound was applied; it must be " +
+				"refused whole, since the order it writes is the one Ali sees too")
+		}
+
+		// His own two, on the other hand, swap. And Ali's inbound, which sits between
+		// them in the panel-wide order, must not be dragged along.
+		payload, _ = json.Marshal([]int{rezaSecond.Id, f.rezaInbound.Id})
+		w := f.as(t, f.reza, http.MethodPost, "/panel/api/inbounds/reorder",
+			url.Values{"data": {string(payload)}}.Encode())
+		if !strings.Contains(w.Body.String(), `"success":true`) {
+			t.Fatalf("an admin cannot reorder their own inbounds: %s", w.Body.String())
+		}
+		if got := order(rezaSecond.Id); got != 2 {
+			t.Errorf("reza's second inbound is at %d; want slot 2, the one his first held", got)
+		}
+		if got := order(f.rezaInbound.Id); got != 3 {
+			t.Errorf("reza's first inbound is at %d; want slot 3", got)
+		}
+		if got := order(f.aliInbound.Id); got != 1 {
+			t.Errorf("Ali's inbound moved to %d; a reorder must pin every row the caller "+
+				"cannot see where it already was", got)
+		}
+	})
+
 	// The property that distinguishes ASSIGNED access from created-by ownership: a
 	// grant can be given and taken away for an inbound the admin never created.
 	t.Run("a granted inbound becomes visible, a revoked one disappears", func(t *testing.T) {
@@ -438,6 +493,13 @@ func TestResellerIsolation(t *testing.T) {
 	// role. So one GET returned every account on it, credentials included.
 	t.Run("get by id returns only the caller's own clients", func(t *testing.T) {
 		f := newResellerFixture(t)
+		// The inbound's own counters, which cover both accounts on it. They are what
+		// the Inbounds page sums into its usage band, and they are not derived from
+		// the client rows the filter strips.
+		if err := database.GetDB().Model(&model.Inbound{}).Where("id = ?", f.aliInbound.Id).
+			Updates(map[string]any{"up": 6000, "down": 6000, "all_time": 12000}).Error; err != nil {
+			t.Fatalf("seed the inbound totals: %v", err)
+		}
 		w := f.as(t, f.sara, http.MethodGet,
 			fmt.Sprintf("/panel/api/inbounds/get/%d", f.aliInbound.Id), "")
 		body := w.Body.String()
@@ -460,6 +522,9 @@ func TestResellerIsolation(t *testing.T) {
 			Obj struct {
 				Settings    string               `json:"settings"`
 				ClientStats []xray.ClientTraffic `json:"clientStats"`
+				Up          int64                `json:"up"`
+				Down        int64                `json:"down"`
+				AllTime     int64                `json:"allTime"`
 			} `json:"obj"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -477,14 +542,19 @@ func TestResellerIsolation(t *testing.T) {
 			t.Errorf("settings carried %d clients (%+v); want exactly the reseller's own",
 				len(settings.Clients), settings.Clients)
 		}
-		// The other half of the filter. GetInbound does not preload ClientStats today,
-		// so this is empty and the check is a guard rather than a live assertion: it is
-		// here because adding a Preload to that one query would silently reopen the
-		// leak through the traffic rows.
+		// The other half of the filter. GetInbound does not preload ClientStats, so the
+		// route loads them itself before filtering (the inbound's own counters are
+		// rescoped from these rows, and unloaded rows would read as zero usage).
 		for _, stat := range resp.Obj.ClientStats {
 			if stat.Email != f.saraEmail {
 				t.Errorf("clientStats leaked %q", stat.Email)
 			}
+		}
+		// And the inbound's own counters, which the Inbounds page sums into its usage
+		// band: Sara's 1000/1000/2000, not the whole inbound's.
+		if resp.Obj.Up != 1000 || resp.Obj.Down != 1000 || resp.Obj.AllTime != 2000 {
+			t.Errorf("up/down/allTime = %d/%d/%d; want the reseller's own 1000/1000/2000",
+				resp.Obj.Up, resp.Obj.Down, resp.Obj.AllTime)
 		}
 
 		// And the filter must be a no-op for an admin: Ali still sees his own client
@@ -658,6 +728,16 @@ func TestResellerIsolation(t *testing.T) {
 		if got := f.spent(t); got != 10*testGB {
 			t.Errorf("spent = %d; a refused bulk reset must not move the balance (want %d)",
 				got, 10*testGB)
+		}
+
+		// The list's order is the panel's, shared by every admin who sees the inbound.
+		// A reseller sells accounts on inbounds an admin lent them and holds no
+		// *Inbound bit at all, so rearranging that admin's table is not theirs to do.
+		payload, _ := json.Marshal([]int{f.aliInbound.Id})
+		w = f.as(t, f.sara, http.MethodPost, "/panel/api/inbounds/reorder",
+			url.Values{"data": {string(payload)}}.Encode())
+		if strings.Contains(w.Body.String(), `"success":true`) {
+			t.Errorf("a reseller reordered an admin's inbound list: %s", w.Body.String())
 		}
 	})
 

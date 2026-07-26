@@ -70,6 +70,11 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.GET("/getClientTrafficsById/:id", read, a.getClientTrafficsById)
 
 	g.POST("/add", requirePerm(model.PermCreateInbound), a.addInbound)
+	// Display order only. Gated on editInbound rather than on the read bit because
+	// the order is the PANEL's, not the viewer's: one admin's drag moves the row in
+	// every other admin's list too, which is not something a read-only account (or a
+	// reseller, who holds no *Inbound bit at all) should be able to do.
+	g.POST("/reorder", requirePerm(model.PermEditInbound), a.reorderInbounds)
 	g.POST("/del/:id", requirePerm(model.PermDeleteInbound), owns, a.delInbound)
 	g.POST("/update/:id", requirePerm(model.PermEditInbound), owns, a.updateInbound)
 	g.POST("/clientIps/:email", read, ownsClient, a.getClientIps)
@@ -373,6 +378,44 @@ func (a *InboundController) getInbounds(c *gin.Context) {
 	jsonObj(c, inbounds, nil)
 }
 
+// reorderInbounds rearranges the inbound list. Presentation only: sort_order never
+// reaches Xray, so unlike every other write on this controller it triggers no restart
+// and no daemon reload.
+//
+// The ids arrive as a JSON array in a form field, matching bulkUpdateClients: the
+// panel posts form-urlencoded, which has no faithful encoding for an array.
+func (a *InboundController) reorderInbounds(c *gin.Context) {
+	var body struct {
+		Data string `form:"data" json:"data"`
+	}
+	if err := c.ShouldBind(&body); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	var ids []int
+	if err := json.Unmarshal([]byte(body.Data), &ids); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	// The targets are named by the BODY, so the route table cannot authorize them.
+	// Refuse the whole reorder unless the caller holds every inbound in it: a partial
+	// apply would leave the list in an order nobody asked for.
+	if !a.callerOwnsInbounds(c, ids) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
+	if err := a.inboundService.ReorderInbounds(ids); err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), nil)
+	// Same as every other write here: push the new list to this admin's own sockets
+	// so their other open tabs follow the move.
+	user := session.GetLoginUser(c)
+	inbounds, _ := a.inboundService.GetInboundsFor(user)
+	websocket.BroadcastInboundsToUser(user.Id, inbounds)
+}
+
 // getInbound retrieves a specific inbound by its ID.
 func (a *InboundController) getInbound(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
@@ -415,6 +458,13 @@ func (a *InboundController) filterInboundForCaller(c *gin.Context, inbound *mode
 	}
 	owned, err := resellerService.OwnedEmails(user.Id)
 	if err != nil {
+		return false
+	}
+	// The filter rescopes the inbound's own traffic counters to the client rows it
+	// keeps, and the caller fetched this row through GetInbound, which does not
+	// preload them. Without this the reseller's usage on the inbound would come back
+	// as a flat zero instead of their own accounts' total.
+	if err := a.inboundService.LoadClientStats(inbound); err != nil {
 		return false
 	}
 	a.inboundService.FilterInboundForReseller(inbound, owned)
