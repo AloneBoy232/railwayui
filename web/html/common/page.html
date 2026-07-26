@@ -89,6 +89,17 @@
         allowExternalProxy: false },
       {{ .reseller }}
     );
+
+    // The caller's capability set, keyed by the same slugs the templates read as
+    // .perms, so a script can decide not to fire a request it would only be
+    // refused for. That matters because HttpUtil resolves a refusal instead of
+    // throwing and toasts it on the way, so a best-effort fetch wrapped in
+    // try/catch still puts "you do not have permission" on screen.
+    //
+    // Like .perms and RESELLER this drives what the UI SHOWS, never what it
+    // ALLOWS: the routes stay reachable by direct request and the middleware is
+    // the enforcement.
+    const PERMS = Object.assign({}, {{ .perms }});
   </script>
 {{ end }}
 

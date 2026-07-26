@@ -9,8 +9,24 @@ const Protocols = {
     Socks: "socks",
     HTTP: "http",
     Wireguard: "wireguard",
-    Hysteria: "hysteria"
+    Hysteria: "hysteria",
+    // Not an Xray protocol: Xray core ships no ssh outbound. The panel keeps the
+    // SSH connection itself and fronts it with a local SOCKS5 proxy, so what
+    // reaches the config is a `socks` outbound pointing at that proxy (see
+    // Outbound.SshSettings and web/service/sshoutbound.go). Listed here so the
+    // tunnel can be created from Add Outbound, where operators look for it.
+    SSH: "ssh"
 };
+
+// Normalises the `servers` array of a server-shaped outbound (socks/http/ssh) to
+// something always safe to index. A missing or empty `servers` is as common as a
+// populated one here: the panel synthesises bare outbounds, and the JSON tab lets
+// an operator hand-write a partial one. Callers still have to treat `users` as
+// optional; see Outbound.SocksSettings.fromJson.
+function firstServerOf(json) {
+    const servers = json && json.servers;
+    return Array.isArray(servers) && servers.length ? servers : [{}];
+}
 
 const SSMethods = {
     AES_256_GCM: 'aes-256-gcm',
@@ -1171,7 +1187,11 @@ class Outbound extends CommonClass {
         }
         let settingsOut = this.settings instanceof CommonClass ? this.settings.toJson() : this.settings;
         return {
-            protocol: this.protocol,
+            // ssh is a panel-side tunnel, not an Xray protocol. What Xray gets is
+            // the socks outbound fronting it, so the protocol is rewritten here
+            // rather than in the caller: every path that serialises an outbound
+            // (Add Outbound, the JSON tab, the config write) then agrees.
+            protocol: this.protocol === Protocols.SSH ? Protocols.Socks : this.protocol,
             settings: settingsOut,
             // Only include tag, streamSettings, sendThrough, mux if present and not empty
             ...(this.tag ? { tag: this.tag } : {}),
@@ -1474,6 +1494,7 @@ Outbound.Settings = class extends CommonClass {
             case Protocols.HTTP: return new Outbound.HttpSettings();
             case Protocols.Wireguard: return new Outbound.WireguardSettings();
             case Protocols.Hysteria: return new Outbound.HysteriaSettings();
+            case Protocols.SSH: return new Outbound.SshSettings();
             default: return null;
         }
     }
@@ -1491,6 +1512,7 @@ Outbound.Settings = class extends CommonClass {
             case Protocols.HTTP: return Outbound.HttpSettings.fromJson(json);
             case Protocols.Wireguard: return Outbound.WireguardSettings.fromJson(json);
             case Protocols.Hysteria: return Outbound.HysteriaSettings.fromJson(json);
+            case Protocols.SSH: return Outbound.SshSettings.fromJson(json);
             default: return null;
         }
     }
@@ -1861,14 +1883,20 @@ Outbound.SocksSettings = class extends CommonClass {
         this.pass = pass;
     }
 
+    // `users` is optional in a socks outbound and absent from every one this panel
+    // synthesises (the SSH tunnel's, WARP's). ObjectUtil.isArrEmpty(undefined) is
+    // FALSE, so guarding with it read straight through to servers[0].users[0] and
+    // threw. That throw landed inside outModal.show() AFTER it had already set
+    // visible, so Edit on such a row opened the dialog holding the previously
+    // edited outbound with OK live, and confirming overwrote the real one.
     static fromJson(json = {}) {
-        let servers = json.servers;
-        if (ObjectUtil.isArrEmpty(servers)) servers = [{ users: [{}] }];
+        const servers = firstServerOf(json);
+        const users = Array.isArray(servers[0].users) ? servers[0].users : [];
         return new Outbound.SocksSettings(
             servers[0].address,
             servers[0].port,
-            ObjectUtil.isArrEmpty(servers[0].users) ? '' : servers[0].users[0].user,
-            ObjectUtil.isArrEmpty(servers[0].users) ? '' : servers[0].users[0].pass,
+            users.length ? users[0].user : '',
+            users.length ? users[0].pass : '',
         );
     }
 
@@ -1882,6 +1910,64 @@ Outbound.SocksSettings = class extends CommonClass {
         };
     }
 };
+// An operator-configured SSH egress tunnel. Only socksPort reaches the Xray
+// config: the panel dials the SSH server itself and serves a local SOCKS5 proxy
+// on 127.0.0.1:socksPort, and Xray is pointed at that. Everything else here is
+// posted to /panel/xray/sshoutbound/save, which owns the tunnel.
+//
+// toJson therefore emits the SOCKS server shape, and Outbound.toJson rewrites the
+// protocol to match, so the JSON tab shows the outbound Xray will really get
+// rather than an `ssh` protocol Xray would reject.
+//
+// Blank password/privateKey/passphrase mean "keep the stored secret" on the
+// server, which is why they are never pre-filled when editing.
+Outbound.SshSettings = class extends CommonClass {
+    constructor(
+        address = '',
+        port = 22,
+        username = '',
+        authType = 'password',
+        password = '',
+        privateKey = '',
+        passphrase = '',
+        knownHost = '',
+        // 0 asks the server to allocate a free loopback port and report it back.
+        // Never operator-supplied: the port only exists on 127.0.0.1 between Xray
+        // and the panel, so there is nothing for an operator to decide and a
+        // hand-picked one just collides with another tunnel.
+        socksPort = 0,
+    ) {
+        super();
+        this.address = address;
+        this.port = port;
+        this.username = username;
+        this.authType = authType;
+        this.password = password;
+        this.privateKey = privateKey;
+        this.passphrase = passphrase;
+        this.knownHost = knownHost;
+        this.socksPort = socksPort;
+    }
+
+    // Reads back the local port from the socks outbound this became, so an
+    // ssh-shaped outbound survives a round trip through the JSON tab. The tunnel
+    // fields themselves live server-side and are not echoed into the config.
+    static fromJson(json = {}) {
+        const servers = firstServerOf(json);
+        const s = new Outbound.SshSettings();
+        if (servers[0].port) s.socksPort = servers[0].port;
+        return s;
+    }
+
+    toJson() {
+        return {
+            servers: [{
+                address: '127.0.0.1',
+                port: this.socksPort,
+            }],
+        };
+    }
+};
 Outbound.HttpSettings = class extends CommonClass {
     constructor(address, port, user, pass) {
         super();
@@ -1891,14 +1977,15 @@ Outbound.HttpSettings = class extends CommonClass {
         this.pass = pass;
     }
 
+    // Same optional-`users` trap as SocksSettings.fromJson above.
     static fromJson(json = {}) {
-        let servers = json.servers;
-        if (ObjectUtil.isArrEmpty(servers)) servers = [{ users: [{}] }];
+        const servers = firstServerOf(json);
+        const users = Array.isArray(servers[0].users) ? servers[0].users : [];
         return new Outbound.HttpSettings(
             servers[0].address,
             servers[0].port,
-            ObjectUtil.isArrEmpty(servers[0].users) ? '' : servers[0].users[0].user,
-            ObjectUtil.isArrEmpty(servers[0].users) ? '' : servers[0].users[0].pass,
+            users.length ? users[0].user : '',
+            users.length ? users[0].pass : '',
         );
     }
 

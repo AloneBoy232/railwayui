@@ -109,6 +109,10 @@ var defaultValueMap = map[string]string{
 	"ldapDefaultLimitIP":    "0",
 	"vpnProvisioned":        "false",
 	"provisionedProtocols":  "",
+	// The version an in-panel self-update replaced, written just before the
+	// restart and cleared by the first super admin to be told about it. See
+	// SettingService.TakePanelUpdatedFrom.
+	"panelUpdatedFrom": "",
 	// Operator-configured SSH egress tunnels (JSON array); see web/service/sshoutbound.go.
 	"sshOutbounds": "",
 }
@@ -389,6 +393,37 @@ func (s *SettingService) GetVpnProvisioned() bool {
 // SetVpnProvisioned persists whether the VPN backend has been provisioned.
 func (s *SettingService) SetVpnProvisioned(value bool) error {
 	return s.setBool("vpnProvisioned", value)
+}
+
+// SetPanelUpdatedFrom records the version an in-panel self-update is replacing.
+// Written immediately before the restart, so the binary that comes up can tell a
+// self-update apart from any other restart and say what it upgraded from.
+func (s *SettingService) SetPanelUpdatedFrom(version string) error {
+	return s.setString("panelUpdatedFrom", version)
+}
+
+// TakePanelUpdatedFrom returns the version the last in-panel self-update replaced
+// and clears the record, so the news is delivered exactly once.
+//
+// Reading and clearing are one operation on purpose: a plain getter would leave
+// the flag set and re-announce the same update on every dashboard load until
+// something else cleared it. Empty means no self-update is pending announcement,
+// which is the state after any ordinary restart.
+//
+// Not atomic against a concurrent caller, and it does not need to be: the worst
+// case is two browser tabs owned by the same super admin both showing the notice,
+// and the route that reaches this is super-admin only.
+func (s *SettingService) TakePanelUpdatedFrom() string {
+	from, err := s.getString("panelUpdatedFrom")
+	if err != nil || from == "" {
+		return ""
+	}
+	if err := s.setString("panelUpdatedFrom", ""); err != nil {
+		// Report it anyway: an undeliverable clear is a repeated notice, which is
+		// better than swallowing the one the operator was waiting for.
+		logger.Warning("panel update: clearing panelUpdatedFrom failed:", err)
+	}
+	return from
 }
 
 // provisionedNone is the sentinel written when the host is deliberately
@@ -878,7 +913,21 @@ func extractHostname(host string) string {
 	return "[" + h + "]"
 }
 
-func (s *SettingService) GetDefaultSettings(host string) (any, error) {
+// panelSettingsOnlyDefaults are the GetDefaultSettings keys a caller without
+// PermPanelSettings does not get. They are inbound-authoring inputs (the panel's
+// TLS cert/key PATHS, pre-filled when an inbound enables TLS) and an admin who
+// cannot reach Panel Settings cannot create inbounds either, so withholding them
+// costs nothing and keeps filesystem paths out of a reseller's page source.
+var panelSettingsOnlyDefaults = []string{"defaultCert", "defaultKey"}
+
+// GetDefaultSettings returns the read-only defaults every client-rendering page
+// needs: the expiry/traffic warning thresholds, the subscription URIs, the date
+// picker locale, the page size, and the core-provisioning state.
+//
+// full=false trims panelSettingsOnlyDefaults for callers who hold no
+// PermPanelSettings. It is NOT a permission check by itself: the route is what
+// decides who may call this at all.
+func (s *SettingService) GetDefaultSettings(host string, full bool) (map[string]any, error) {
 	type settingFunc func() (any, error)
 	settings := map[string]settingFunc{
 		"expireDiff":     func() (any, error) { return s.GetExpireDiff() },
@@ -906,7 +955,7 @@ func (s *SettingService) GetDefaultSettings(host string) (any, error) {
 	for key, fn := range settings {
 		value, err := fn()
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		result[key] = value
 	}
@@ -962,6 +1011,13 @@ func (s *SettingService) GetDefaultSettings(host string) (any, error) {
 		}
 		if subClashEnable && result["subClashURI"].(string) == "" {
 			result["subClashURI"] = subURI + subClashPath
+		}
+	}
+
+	// Trimmed last, so the sub-URI synthesis above still runs off the full map.
+	if !full {
+		for _, k := range panelSettingsOnlyDefaults {
+			delete(result, k)
 		}
 	}
 

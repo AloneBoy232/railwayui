@@ -421,6 +421,17 @@ func runUninstall(assumeYes bool) {
 		} else if !os.IsNotExist(err) {
 			report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", exePath, err))
 		}
+		// Then the install directory, but ONLY when the teardown emptied it.
+		// os.Remove on a directory is a plain rmdir: it refuses a non-empty one,
+		// which is exactly the guard wanted here — an operator who kept notes or
+		// their own files in /opt/vpn-ui does not lose them, while the usual case
+		// (nothing left but the directory itself) stops leaving a stale dir on
+		// every uninstalled host.
+		if dir := filepath.Dir(exePath); dir != "" && dir != "/" && dir != "." {
+			if err := os.Remove(dir); err == nil {
+				report.Removed = append(report.Removed, dir)
+			}
+		}
 	}
 
 	fmt.Printf("\nRemoved %d item(s).\n", len(report.Removed))

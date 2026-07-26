@@ -105,6 +105,70 @@ func RemoveIndex(s []any, index int) []any {
 	return append(s[:index], s[index+1:]...)
 }
 
+// applySshOutbounds replaces, for every configured SSH tunnel, the outbound
+// carrying its tag with a `socks` outbound pointing at that tunnel's live local
+// proxy. Xray core has no ssh outbound, so this socks one IS the SSH outbound.
+//
+// Replace-by-tag rather than append-if-missing, so an entry left in the template
+// by the older client-side writer is corrected rather than duplicated (a
+// duplicate tag makes Xray refuse the whole config).
+//
+// A tunnel with no port yet is skipped: it has never successfully bound, so there
+// is nothing to point at, and emitting 127.0.0.1:0 would be a dead outbound that
+// looks live. Everything else in the template is left exactly as it was.
+func (s *XrayService) applySshOutbounds(config *xray.Config) {
+	var svc SshOutboundService
+	if err := applySshOutboundsWith(config, svc.List()); err != nil {
+		logger.Warning("ssh outbound: leaving the template outbounds alone:", err)
+	}
+}
+
+// applySshOutboundsWith is the pure half of applySshOutbounds, taking the tunnel
+// list as an argument so it can be tested without a database.
+func applySshOutboundsWith(config *xray.Config, tunnels []SshOutboundConfig) error {
+	if len(tunnels) == 0 {
+		return nil
+	}
+
+	var obs []map[string]any
+	if len(config.OutboundConfigs) > 0 {
+		if err := json.Unmarshal(config.OutboundConfigs, &obs); err != nil {
+			return err
+		}
+	}
+
+	for _, t := range tunnels {
+		if t.Tag == "" || t.SocksPort <= 0 {
+			continue
+		}
+		synth := map[string]any{
+			"tag":      t.Tag,
+			"protocol": "socks",
+			"settings": map[string]any{
+				"servers": []any{map[string]any{"address": "127.0.0.1", "port": t.SocksPort}},
+			},
+		}
+		replaced := false
+		for i, ob := range obs {
+			if tag, _ := ob["tag"].(string); tag == t.Tag {
+				obs[i] = synth
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			obs = append(obs, synth)
+		}
+	}
+
+	out, err := json.Marshal(obs)
+	if err != nil {
+		return err
+	}
+	config.OutboundConfigs = out
+	return nil
+}
+
 // GetXrayConfig retrieves and builds the Xray configuration from settings and inbounds.
 func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	templateConfig, err := s.settingService.GetXrayConfigTemplate()
@@ -117,6 +181,19 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// The socks outbound fronting each SSH tunnel is synthesized here rather than
+	// stored in the template, so the tunnel and the outbound that points at it can
+	// never disagree. They used to be written from two different places at two
+	// different times - the tunnel server-side on save, the outbound by JS into the
+	// in-page template - and every way that could drift, did: creating a tunnel and
+	// not pressing Save left a running tunnel no outbound referenced; deleting one
+	// and not pressing Save left an outbound aimed at a closed port, which refuses
+	// every connection on that tag with no explanation; and a boot-time port
+	// conflict left the saved outbound pointing at whatever else took the number.
+	// Deriving it from the stored tunnel list on every config build removes the
+	// second writer, and with it the whole class.
+	s.applySshOutbounds(xrayConfig)
 
 	s.inboundService.AddTraffic(nil, nil)
 

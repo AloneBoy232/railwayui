@@ -259,6 +259,18 @@
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-radio-checked .ant-radio-inner { border-color:var(--accent); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-radio-inner::after { background:var(--accent); }
 
+/* A plain radio's LABEL. antd hard-codes color:rgba(0,0,0,.65) on
+   .ant-radio-wrapper, and nothing overrode it, so those labels rendered
+   near-black on the dark and ultra-dark surfaces. The .ant-modal-content colour
+   further down reaches them only by inheritance, which a direct rule on the
+   nearer element beats - so it has to be stated here.
+   Radio BUTTONS are unaffected (custom.css themes .ant-radio-button-wrapper),
+   which is why only the two plain-radio dialogs in the panel were wrong: the
+   reseller delete prompt and the SSH outbound auth picker. */
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-radio-group,
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-radio-wrapper { color:var(--text); }
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-radio-wrapper-disabled { color:var(--text-3); }
+
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-divider { background:var(--border); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-divider-horizontal.ant-divider-with-text-center { color:var(--text-2); }
 
@@ -300,6 +312,13 @@
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-info { background:var(--info-weak); border-color:var(--info); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-message { color:var(--text); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-description { color:var(--text-2); }
+/* The icon kept antd's own palette while the box around it moved to the tokens,
+   so a warning alert paired an amber icon with a token-coloured border and read
+   as two different design systems. Worst in light, where --warn is a dark olive. */
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-error .ant-alert-icon { color:var(--error); }
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-warning .ant-alert-icon { color:var(--warn); }
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-success .ant-alert-icon { color:var(--ok); }
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-info .ant-alert-icon { color:var(--info); }
 
 /* Spacing for the no-TLS banner's permanent "don't show this again" action,
    which sits on its own line under the description. margin-top rather than a

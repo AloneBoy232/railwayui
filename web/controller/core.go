@@ -119,7 +119,11 @@ func (a *CoreController) provisionStatus(c *gin.Context) {
 // so the dialog never opens a console on a run that was never going to start.
 func (a *CoreController) uninstallCores(c *gin.Context) {
 	cores := selectedCores(c)
-	started, err := a.coreService.StartCoreUninstall(cores)
+	// `inbounds` carries the operator's answer to "these cores still serve
+	// inbounds": "delete" removes them with the core, "keep" strands them on
+	// purpose. Absent means the question was never asked, and the service still
+	// refuses - so an old client cannot strand inbounds by omission.
+	started, err := a.coreService.StartCoreUninstall(cores, c.PostForm("inbounds"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.core.toasts.uninstalled"), err)
 		return

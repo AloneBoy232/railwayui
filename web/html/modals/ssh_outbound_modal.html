@@ -3,8 +3,6 @@
          :closable="true" :footer="null" :width="680" :class="themeSwitcher.currentTheme">
     <!-- list of configured tunnels -->
     <template v-if="sshOutboundModal.mode === 'list'">
-        <a-alert type="info" show-icon :style="{ marginBottom: '12px' }"
-            message='{{ i18n "pages.xray.outbound.sshOutHint" }}'></a-alert>
         <a-list bordered v-if="sshOutboundModal.list.length">
             <a-list-item v-for="item in sshOutboundModal.list" :key="item.tag">
                 <a-list-item-meta :title="item.tag"
@@ -25,18 +23,11 @@
     <!-- add / edit form -->
     <template v-else>
         <a-form layout="vertical">
-            <a-row :gutter="12">
-                <a-col :span="12">
-                    <a-form-item label='{{ i18n "pages.xray.outbound.sshOutTag" }}'>
-                        <a-input v-model="sshOutboundForm.tag" :disabled="sshOutboundForm._edit" placeholder="ssh-out-1"></a-input>
-                    </a-form-item>
-                </a-col>
-                <a-col :span="12">
-                    <a-form-item label='{{ i18n "pages.xray.outbound.sshOutSocksPort" }}'>
-                        <a-input-number v-model="sshOutboundForm.socksPort" :min="1" :max="65535" :style="{ width: '100%' }"></a-input-number>
-                    </a-form-item>
-                </a-col>
-            </a-row>
+            <!-- No local SOCKS port field: the server binds a free loopback port
+                 and reports it back, so tunnels cannot collide. -->
+            <a-form-item label='{{ i18n "pages.xray.outbound.sshOutTag" }}'>
+                <a-input v-model="sshOutboundForm.tag" :disabled="sshOutboundForm._edit" placeholder="ssh-out-1"></a-input>
+            </a-form-item>
             <a-row :gutter="12">
                 <a-col :span="16">
                     <a-form-item label='{{ i18n "pages.xray.outbound.sshOutAddress" }}'>
@@ -119,7 +110,7 @@
     };
     const sshOutboundForm = {
         _edit: false, tag: '', remark: '', address: '', port: 22, username: '',
-        authType: 'password', password: '', privateKey: '', passphrase: '', knownHost: '', socksPort: 10810,
+        authType: 'password', password: '', privateKey: '', passphrase: '', knownHost: '', socksPort: 0,
     };
 
     new Vue({
@@ -131,7 +122,8 @@
                 const n = sshOutboundModal.list.length;
                 Object.assign(sshOutboundForm, {
                     _edit: false, tag: 'ssh-out-' + (n + 1), remark: '', address: '', port: 22, username: '',
-                    authType: 'password', password: '', privateKey: '', passphrase: '', knownHost: '', socksPort: 10810 + n,
+                    // 0 = let the server bind a free loopback port and tell us which.
+                    authType: 'password', password: '', privateKey: '', passphrase: '', knownHost: '', socksPort: 0,
                 });
                 sshOutboundModal.log = '';
                 sshOutboundModal.statusText = '';
@@ -154,9 +146,14 @@
                 const msg = await HttpUtil.post('/panel/xray/sshoutbound/save', sshOutboundForm);
                 sshOutboundModal.saving = false;
                 if (!msg || !msg.success) return;
-                // Add/replace the tagged socks outbound in the template so routing/reverse can
-                // target it, then remind the operator to Save the Xray config to persist it.
-                this.addSshSocksOutbound(sshOutboundForm.tag, Number(sshOutboundForm.socksPort) || 10810);
+                const socksPort = Number(msg.obj && msg.obj.socksPort) || 0;
+                // Mirror the tunnel into the template so it appears in the outbounds
+                // table. This copy is now COSMETIC: the server re-derives the real
+                // socks outbound from the stored tunnel list on every config build
+                // (XrayService.applySshOutbounds) and replaces this entry by tag, so
+                // a stale, wrong or missing one here can no longer break egress.
+                if (socksPort) this.addSshSocksOutbound(sshOutboundForm.tag, socksPort);
+                if (app.loadSshOutboundTags) app.loadSshOutboundTags();
                 this.$message.success('{{ i18n "pages.xray.outbound.sshOutSaved" }}');
                 await sshOutboundModal.refresh();
                 sshOutboundModal.mode = 'list';
@@ -169,7 +166,11 @@
                     onOk: async () => {
                         const msg = await HttpUtil.post('/panel/xray/sshoutbound/delete', { tag: item.tag });
                         if (msg && msg.success) {
-                            self.removeSshSocksOutbound(item.tag);
+                            // The synthesized outbound goes with the tunnel server-side.
+                            // This only strips a stale copy an older panel version wrote
+                            // into the saved template, so the tag does not linger.
+                            self.removeStaleSshOutbound(item.tag);
+                            if (app.loadSshOutboundTags) app.loadSshOutboundTags();
                             await sshOutboundModal.refresh();
                         }
                     },
@@ -185,8 +186,8 @@
                     sshOutboundModal.log = msg.obj.log || '';
                 }
             },
-            // Add/replace the tagged socks outbound that fronts this tunnel, then commit the
-            // template. Reverse/routing select it purely by this tag. Mirrors WARP's addSocksOutbound.
+            // Cosmetic template entry so the tunnel shows up in the outbounds table;
+            // see saveTunnel. The authoritative one is synthesized server-side.
             addSshSocksOutbound(tag, port) {
                 const outs = app.templateSettings.outbounds;
                 for (let i = outs.length - 1; i >= 0; i--) {
@@ -195,12 +196,15 @@
                 outs.push({ tag: tag, protocol: 'socks', settings: { servers: [{ address: '127.0.0.1', port: port }] } });
                 app.outboundSettings = JSON.stringify(outs);
             },
-            removeSshSocksOutbound(tag) {
+            // Drops a deleted tunnel's row from the template. The server already
+            // stopped synthesizing it, so this only clears the leftover row.
+            removeStaleSshOutbound(tag) {
                 const outs = app.templateSettings.outbounds;
+                let found = false;
                 for (let i = outs.length - 1; i >= 0; i--) {
-                    if (outs[i] && outs[i].tag === tag) outs.splice(i, 1);
+                    if (outs[i] && outs[i].tag === tag) { outs.splice(i, 1); found = true; }
                 }
-                app.outboundSettings = JSON.stringify(outs);
+                if (found) app.outboundSettings = JSON.stringify(outs);
             },
         },
     });

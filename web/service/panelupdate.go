@@ -186,6 +186,30 @@ func (s *ServerService) PanelUpdateProgress() PanelUpdateProgressInfo {
 	}
 }
 
+// PanelUpdateResultInfo is the answer to "did this panel just come back from an
+// in-panel update, and from what version".
+type PanelUpdateResultInfo struct {
+	Updated bool   `json:"updated"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+}
+
+// TakePanelUpdateResult reports whether this process is the one that came up
+// after a self-update, CONSUMING the record so the news is delivered once.
+//
+// To is always this binary's version, so the caller can render the notice without
+// a second round trip. From can equal To when the operator reinstalled the version
+// they were already on; that is still a completed update and is reported as one.
+func (s *ServerService) TakePanelUpdateResult() PanelUpdateResultInfo {
+	var settingService SettingService
+	from := settingService.TakePanelUpdatedFrom()
+	return PanelUpdateResultInfo{
+		Updated: from != "",
+		From:    from,
+		To:      config.GetVersion(),
+	}
+}
+
 // speedSampleInterval bounds how often the published speed is recomputed, and
 // speedEMAAlpha weights each new sample against the running average. Raw per-Read
 // deltas are far too bursty to show verbatim: TCP delivers in chunks, so an
@@ -352,6 +376,16 @@ func (s *ServerService) UpdatePanel() error {
 	}
 	logger.Infof("panel update: installed new binary at %s — restarting", exe)
 	setUpdateProgress(updatePhaseRestarting, 100)
+
+	// Record what we are replacing so the binary that comes up can tell the
+	// operator the update landed. Written here, after the swap and before the
+	// restart, so it marks a self-update specifically and not any other restart.
+	// Best-effort: a panel that cannot write this still updates fine, it just
+	// comes back without the notice.
+	var settingService SettingService
+	if err := settingService.SetPanelUpdatedFrom(config.GetVersion()); err != nil {
+		logger.Warning("panel update: recording the updated-from version failed:", err)
+	}
 
 	// Restart detached so our own termination can't abort the restart.
 	restarting = true

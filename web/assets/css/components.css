@@ -803,6 +803,12 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 .bo-spec-ico--virt { color:var(--info); }
 .bo-spec-ico--loc { color:var(--ok); }
 .bo-spec-val.bo-muted { color:var(--text-3); font-weight:var(--fw-medium,500); }
+/* bo-muted as a plain utility. It used to exist ONLY compounded with
+   .bo-spec-val above, so the two descriptions in the reseller-delete dialog -
+   the only places that use it bare - matched no rule at all and rendered in the
+   inherited colour, which is why that dialog looked untethered from the theme.
+   Weight stays on the compound rule; standalone use is colour only. */
+.bo-muted { color:var(--text-3); }
 .bo-spec-ico--health { color:var(--ok); }
 .bo-spec-ico--panel { color:var(--accent); }
 

@@ -396,6 +396,61 @@
         </a-form>
       </template>
 
+      <!-- ssh settings. Creates a panel-managed SSH tunnel and points a socks
+           outbound at its local proxy; the tag above names both. -->
+      <template v-if="outbound.protocol === Protocols.SSH">
+        <a-form-item label='{{ i18n "pages.xray.outbound.sshOutAddress" }}'>
+          <a-input v-model.trim="outbound.settings.address" placeholder="203.0.113.10"></a-input>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.xray.outbound.sshOutPort" }}'>
+          <a-input-number v-model.number="outbound.settings.port" :min="1" :max="65535"></a-input-number>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.xray.outbound.sshOutUsername" }}'>
+          <a-input v-model.trim="outbound.settings.username" placeholder="root"></a-input>
+        </a-form-item>
+        <a-form-item label='{{ i18n "pages.xray.outbound.sshOutAuth" }}'>
+          <a-radio-group v-model="outbound.settings.authType" button-style="solid">
+            <a-radio-button value="password">{{ i18n "pages.xray.outbound.sshOutPassword" }}</a-radio-button>
+            <a-radio-button value="privateKey">{{ i18n "pages.xray.outbound.sshOutKey" }}</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item v-if="outbound.settings.authType === 'password'"
+          label='{{ i18n "pages.xray.outbound.sshOutPassword" }}'>
+          <a-input-password v-model="outbound.settings.password"></a-input-password>
+        </a-form-item>
+        <template v-else>
+          <a-form-item label='{{ i18n "pages.xray.outbound.sshOutKey" }}'
+            :label-col="{ span: 24 }" :wrapper-col="{ span: 24 }">
+            <a-textarea v-model="outbound.settings.privateKey" :rows="4"
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></a-textarea>
+          </a-form-item>
+          <a-form-item label='{{ i18n "pages.xray.outbound.sshOutPassphrase" }}'>
+            <a-input-password v-model="outbound.settings.passphrase"></a-input-password>
+          </a-form-item>
+        </template>
+        <!-- Label kept SHORT on purpose. antd-vue 1.7.8 gives .ant-form-item-label
+             overflow:hidden and white-space:nowrap, so a label wider than its
+             8-of-24 column does not wrap, it breaks out of the row. The detail
+             that would have made it long lives in the tooltip instead. -->
+        <a-form-item>
+          <template slot="label">
+            <a-tooltip>
+              <template slot="title">
+                <span>Pin the SSH server's host key: paste its SHA256 (or legacy MD5)
+                  fingerprint. Leave blank to trust the key seen on first connect,
+                  which is logged so it can be pasted back here.</span>
+              </template>
+              {{ i18n "pages.xray.outbound.sshOutKnownHost" }}
+              <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+          </template>
+          <a-input v-model.trim="outbound.settings.knownHost" placeholder="SHA256:..."></a-input>
+        </a-form-item>
+        <!-- No local SOCKS port field: the server picks a free one and reports it
+             back, so two tunnels can never collide and the operator never has to
+             know a port that only exists on loopback. -->
+      </template>
+
       <!-- Address + Port -->
       <template v-if="outbound.hasAddressPort()">
         <a-form-item label='{{ i18n "pages.inbounds.address" }}'>

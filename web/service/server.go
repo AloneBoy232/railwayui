@@ -1238,6 +1238,11 @@ func (s *ServerService) ImportDB(file multipart.File) error {
 	if err = os.Rename(config.GetDBPath(), fallbackPath); err != nil {
 		return common.NewErrorf("Error backing up current db file: %v", err)
 	}
+	// The -wal/-shm sidecars are named after the PATH, so they do not travel with
+	// the rename above and would end up paired with the IMPORTED database. A WAL
+	// from a different database is a corruption path. CloseDB normally removes
+	// them, but its error is only logged, so this is the belt to that braces.
+	database.RemoveSidecars(config.GetDBPath())
 
 	// Defer fallback cleanup ONLY if everything goes well
 	defer func() {

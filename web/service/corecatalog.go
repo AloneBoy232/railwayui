@@ -118,29 +118,43 @@ var coreCatalog = []coreSpec{
 		desc:    "OpenVPN over TCP and UDP with downloadable .ovpn profiles",
 		modules: []string{"tun"},
 		daemons: []string{"openvpn"},
-		globs:   []string{"/etc/openvpn/server-*", "/var/run/openvpn"},
+		// /etc/openvpn itself is the DISTRO package's directory and is deliberately
+		// NOT listed; only what the panel creates inside it is removed. "server" is
+		// the plain subdir the panel makes, which "server-*" does not match.
+		globs: []string{"/etc/openvpn/server-*", "/etc/openvpn/server", "/var/run/openvpn"},
 	},
 	{
 		name: "openconnect", title: "OpenConnect (cisco)", backend: "ocserv",
 		desc:    "AnyConnect-compatible TLS VPN",
 		modules: []string{"tun"},
 		daemons: []string{"ocserv", "ocserv-worker", "occtl"},
-		globs:   []string{"/etc/ocserv/server-*", "/var/run/ocserv"},
+		// The config ROOT as well as the per-inbound files: a full uninstall that
+		// left /etc/ocserv behind meant a later reinstall silently re-adopted the
+		// old certificates and ocserv.conf.
+		paths: []string{"/etc/ocserv"},
+		globs: []string{"/etc/ocserv/server-*", "/var/run/ocserv"},
 	},
 	{
 		name: "sstp", title: "SSTP", backend: "accel-ppp",
 		desc:    "Microsoft SSTP over HTTPS, native on Windows",
 		modules: []string{"ppp_generic"},
 		feats:   []string{featAccel},
-		globs:   []string{"/etc/vpn-ui-sstp/server-*"},
+		// The config ROOT as well as the per-inbound files: a glob alone leaves the
+		// directory behind once the last inbound is gone.
+		paths: []string{"/etc/vpn-ui-sstp"},
+		globs: []string{"/etc/vpn-ui-sstp/server-*"},
 	},
 	{
 		name: "ikev2", title: "IKEv2", backend: "strongSwan (charon)",
 		desc:       "IKEv2/IPsec, native on Windows, macOS, iOS and Android",
 		optModules: []string{"af_key", "esp4", "xfrm_user"},
 		feats:      []string{featStrongswan},
-		paths:      []string{"/etc/vpn-ui-ikev2"},
-		globs:      []string{"/etc/swanctl/conf.d/ikev2-*.conf"},
+		// /etc/vpn-ui-ikev2 is deliberately NOT here. Despite the name it is the
+		// SHARED charon config root: writeCharonConf() creates it whenever charon
+		// is needed by either protocol, so an L2TP-only box has one too. Removing
+		// it with IKEv2 would delete a directory L2TP still uses (and it would be
+		// recreated on the next reload anyway). It goes with featStrongswan.
+		globs: []string{"/etc/swanctl/conf.d/ikev2-*.conf"},
 	},
 	{
 		name: "wgc", title: "WireGuard (C)", backend: "WireGuard (kernel)",
@@ -157,7 +171,9 @@ var coreCatalog = []coreSpec{
 		name: "mtproto", title: "MTProto Proxy", backend: "telemt",
 		desc:    "Telegram MTProto proxy",
 		daemons: []string{"telemt"},
-		globs:   []string{"/etc/vpn-ui-mtproto/server-*"},
+		// See the SSTP entry: the root goes too.
+		paths: []string{"/etc/vpn-ui-mtproto"},
+		globs: []string{"/etc/vpn-ui-mtproto/server-*"},
 	},
 	{
 		name: "ssh", title: "SSH", backend: "Built-in (vpn-ui)",

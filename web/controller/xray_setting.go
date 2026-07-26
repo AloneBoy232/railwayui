@@ -185,7 +185,14 @@ func (a *XraySettingController) sshoutbound(c *gin.Context) {
 			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 			return
 		}
-		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.SshOutboundService.Save(cfg))
+		saved, err := a.SshOutboundService.Save(cfg)
+		if err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+			return
+		}
+		// The allocated loopback port goes back to the caller: it is what the
+		// synthesized socks outbound has to point at, and only the server knows it.
+		jsonObj(c, gin.H{"socksPort": saved.SocksPort}, nil)
 	case "delete":
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.SshOutboundService.Delete(c.PostForm("tag")))
 	case "status":

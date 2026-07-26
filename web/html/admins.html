@@ -72,7 +72,7 @@
                           <span>{{ i18n "pages.admins.reassign" }}</span>
                         </a-menu-item>
                         <a-menu-item :disabled="admin.id === currentAdminId" @click="delAdmin(admin)">
-                          <span :style="{ color: admin.id === currentAdminId ? undefined : '#FF4D4F' }">
+                          <span :style="{ color: admin.id === currentAdminId ? undefined : 'var(--error)' }">
                             <a-icon type="delete"></a-icon>
                             <span>{{ i18n "delete" }}</span>
                           </span>

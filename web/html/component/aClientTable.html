@@ -63,10 +63,10 @@
     </a-tooltip>
     <a-tooltip>
       <template slot="title">
-        <span :style="{ color: '#FF4D4F' }"> {{ i18n "delete"}}</span>
+        <span :style="{ color: 'var(--error)' }"> {{ i18n "delete"}}</span>
       </template>
       <a-popconfirm @confirm="delClient(record.id,client,false)" title='{{ i18n "pages.inbounds.deleteClientContent"}}' :overlay-class-name="themeSwitcher.currentTheme" ok-text='{{ i18n "delete"}}' ok-type="danger" cancel-text='{{ i18n "cancel"}}'>
-        <a-icon slot="icon" type="question-circle-o" :style="{ color: '#e04141' }"></a-icon>
+        <a-icon slot="icon" type="question-circle-o" :style="{ color: 'var(--error)' }"></a-icon>
         <a-icon :style="{ fontSize: '22px', cursor: 'pointer' }" class="delete-icon" type="delete" v-if="isRemovable(record.id)"></a-icon>
       </a-popconfirm>
     </a-tooltip>
@@ -240,7 +240,7 @@
       </a-menu-item>
       <a-menu-item v-if="isRemovable(record.id)" @click="delClient(record.id,client)">
         <a-icon :style="{ fontSize: '14px' }" type="delete"></a-icon>
-        <span :style="{ color: '#FF4D4F' }"> {{ i18n "delete"}}</span>
+        <span :style="{ color: 'var(--error)' }"> {{ i18n "delete"}}</span>
       </a-menu-item>
       <a-menu-item @click="exportClientTxt(record,client)">
         <a-icon :style="{ fontSize: '14px' }" type="file-text"></a-icon>

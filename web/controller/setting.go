@@ -38,11 +38,26 @@ func NewSettingController(g *gin.RouterGroup) *SettingController {
 
 // initRouter sets up the routes for settings management.
 func (a *SettingController) initRouter(g *gin.RouterGroup) {
+	// defaultSettings is deliberately OUTSIDE the permission gate below, on its own
+	// group so the exemption cannot be undone by moving a line.
+	//
+	// It serves the read-only defaults every page that renders clients needs
+	// (expiry/traffic warning thresholds, subscription URIs, date picker, page
+	// size), and the inbounds page is reachable by resellers and by delegated
+	// admins who hold no PermPanelSettings. Gating it meant their page load always
+	// fired one request they could never pass: the panel toasted "you do not have
+	// permission" on every visit, and - worse than the noise - the reply never
+	// landed, so subSettings stayed disabled and their accounts showed no
+	// subscription link or QR at all.
+	//
+	// Login is still required: this group descends from /panel, which carries
+	// checkLogin. The response is trimmed for callers without PermPanelSettings.
+	g.Group("/setting").POST("/defaultSettings", a.getDefaultSettings)
+
 	g = g.Group("/setting")
 	g.Use(requirePerm(model.PermPanelSettings))
 
 	g.POST("/all", a.getAllSetting)
-	g.POST("/defaultSettings", a.getDefaultSettings)
 	g.POST("/update", a.updateSetting)
 	g.POST("/updateUser", a.updateUser)
 	g.POST("/twoFactor", a.updateTwoFactor)
@@ -89,7 +104,10 @@ func (a *SettingController) getAllSetting(c *gin.Context) {
 
 // getDefaultSettings retrieves the default settings based on the host.
 func (a *SettingController) getDefaultSettings(c *gin.Context) {
-	result, err := a.settingService.GetDefaultSettings(c.Request.Host)
+	// Panel-settings holders get the whole map; everyone else gets it minus the
+	// inbound-authoring cert/key paths they have no route to use.
+	full := session.GetLoginUser(c).Can(model.PermPanelSettings)
+	result, err := a.settingService.GetDefaultSettings(c.Request.Host, full)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
 		return

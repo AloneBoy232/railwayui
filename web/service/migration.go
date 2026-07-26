@@ -147,6 +147,9 @@ func (s *ServerService) ImportForeignDB(src dbFile, activate bool) (*ImportRepor
 	if err = os.Rename(dbPath, fallbackPath); err != nil {
 		return nil, common.NewErrorf("Error backing up current db file: %v", err)
 	}
+	// See the identical call in ServerService.ImportDB: the sidecars stay at the
+	// old path and must not be inherited by the imported database.
+	database.RemoveSidecars(dbPath)
 	defer func() {
 		// Only fires on the success path; the fallback is consumed by an error return.
 		if _, err := os.Stat(fallbackPath); err == nil {

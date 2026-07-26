@@ -46,13 +46,28 @@ type SshOutboundConfig struct {
 
 const sshOutboundsSettingKey = "sshOutbounds"
 
+// sshOutCfgMu serialises the read-modify-write of the whole tunnel list, which
+// lives in ONE settings row. Without it two concurrent saves both load the same
+// list, both append their own tunnel and both write: the loser's tunnel vanishes
+// from the setting while its listener stays bound and its goroutines keep running,
+// so it is invisible in the UI, unstoppable, and re-raised by nothing at boot.
+// Single-process panel, so a plain mutex is enough.
+var sshOutCfgMu sync.Mutex
+
 // --- Service API (thin; live state lives in sshOutMgr) ---
 
 // InitSshOutbound raises every configured tunnel at panel boot.
 func (s *SshOutboundService) InitSshOutbound() {
 	for _, cfg := range s.load() {
-		if err := sshOutMgr.start(cfg); err != nil {
-			logger.Warning("ssh outbound: start failed for", cfg.Tag, ":", err)
+		// The stored port is deliberately re-bound as-is rather than re-allocated:
+		// the saved Xray config already names it. If it is taken, the tunnel stays
+		// down and says so, which is recoverable by re-saving it in the panel;
+		// moving it here would leave a running tunnel that the outbound pointing at
+		// the old port can never reach, and nothing on screen would look wrong.
+		if _, err := sshOutMgr.start(cfg, false); err != nil {
+			logger.Warning("ssh outbound: start failed for", cfg.Tag,
+				"on local socks port", cfg.SocksPort, ":", err,
+				"- re-save it in the panel to bind a free port")
 		}
 	}
 }
@@ -70,23 +85,32 @@ func (s *SshOutboundService) List() []SshOutboundConfig {
 	return out
 }
 
-// Save upserts a tunnel by tag and (re)starts it. A blank secret on edit keeps the
-// stored one, so the UI can show an empty field without wiping the key.
-func (s *SshOutboundService) Save(cfg SshOutboundConfig) error {
+// Save upserts a tunnel by tag, starts it, and returns the loopback SOCKS port it
+// is listening on. A blank secret on edit keeps the stored one, so the UI can show
+// an empty field without wiping the key.
+//
+// SocksPort <= 0 means "allocate one". The tunnel is started BEFORE the config is
+// persisted, because starting is what decides the port: the listener is bound on
+// 127.0.0.1:0 and the kernel hands back one that was free at bind time. Picking a
+// number first and binding it later is the version with a race in it.
+func (s *SshOutboundService) Save(cfg SshOutboundConfig) (SshOutboundConfig, error) {
 	cfg.Tag = strings.TrimSpace(cfg.Tag)
 	cfg.Address = strings.TrimSpace(cfg.Address)
 	if cfg.Tag == "" {
-		return errors.New("tag is required")
+		return cfg, errors.New("tag is required")
 	}
 	if cfg.Address == "" {
-		return errors.New("address is required")
+		return cfg, errors.New("address is required")
 	}
 	if cfg.Port <= 0 {
 		cfg.Port = 22
 	}
-	if cfg.SocksPort <= 0 || cfg.SocksPort > 65535 {
-		return errors.New("local socks port must be between 1 and 65535")
+	if cfg.SocksPort > 65535 {
+		return cfg, errors.New("local socks port must be 65535 or below")
 	}
+
+	sshOutCfgMu.Lock()
+	defer sshOutCfgMu.Unlock()
 
 	all := s.load()
 	prev, hadPrev := findTunnel(all, cfg.Tag)
@@ -100,6 +124,12 @@ func (s *SshOutboundService) Save(cfg SshOutboundConfig) error {
 		if cfg.Passphrase == "" {
 			cfg.Passphrase = prev.Passphrase
 		}
+		// Keep the port an existing tunnel is already reachable on. The Xray
+		// outbound points at it by number, so re-allocating on every edit would
+		// silently break every edited tunnel.
+		if cfg.SocksPort <= 0 {
+			cfg.SocksPort = prev.SocksPort
+		}
 	}
 
 	out := make([]SshOutboundConfig, 0, len(all)+1)
@@ -107,21 +137,40 @@ func (s *SshOutboundService) Save(cfg SshOutboundConfig) error {
 		if c.Tag == cfg.Tag {
 			continue // replaced below
 		}
-		if c.SocksPort == cfg.SocksPort {
-			return fmt.Errorf("local socks port %d is already used by outbound %q", cfg.SocksPort, c.Tag)
+		if cfg.SocksPort > 0 && c.SocksPort == cfg.SocksPort {
+			return cfg, fmt.Errorf("local socks port %d is already used by outbound %q", cfg.SocksPort, c.Tag)
 		}
 		out = append(out, c)
 	}
-	out = append(out, cfg)
 
-	if err := s.persist(out); err != nil {
-		return err
+	// allowRepick: a save can move the port, because the resolved one is returned
+	// to the caller and written into the outbound that points at it.
+	port, err := sshOutMgr.start(cfg, true)
+	if err != nil {
+		return cfg, err
 	}
-	return sshOutMgr.start(cfg)
+	cfg.SocksPort = port
+
+	out = append(out, cfg)
+	if err := s.persist(out); err != nil {
+		// The tunnel is up but its config would be lost on restart, and the caller
+		// is about to point an outbound at a port nothing will re-bind. Take it
+		// back down rather than leave that mismatch.
+		sshOutMgr.stop(cfg.Tag)
+		return cfg, err
+	}
+	// The socks outbound fronting this tunnel is derived from the stored list at
+	// config-build time (XrayService.applySshOutbounds), so the core has to be
+	// rebuilt for the change to reach it.
+	(&XrayService{}).SetToNeedRestart()
+	return cfg, nil
 }
 
 // Delete removes a tunnel by tag and stops it.
 func (s *SshOutboundService) Delete(tag string) error {
+	sshOutCfgMu.Lock()
+	defer sshOutCfgMu.Unlock()
+
 	all := s.load()
 	out := make([]SshOutboundConfig, 0, len(all))
 	for _, c := range all {
@@ -133,6 +182,8 @@ func (s *SshOutboundService) Delete(tag string) error {
 		return err
 	}
 	sshOutMgr.stop(tag)
+	// Drops the synthesized outbound too; see Save.
+	(&XrayService{}).SetToNeedRestart()
 	return nil
 }
 
@@ -194,6 +245,10 @@ type sshTunnel struct {
 	gen     atomic.Int64 // bumped on stop/restart; loops compare to exit cleanly
 	client  atomic.Pointer[ssh.Client]
 	closing atomic.Bool
+	// Fingerprint adopted on the first connect when no pin was configured, and
+	// enforced on every reconnect after. Read and written from the handshake
+	// callback, which runs on the dialing goroutine, hence atomic.
+	learnedKey atomic.Pointer[string]
 }
 
 // start binds the local SOCKS5 listener once, then runs a supervisor that keeps an
@@ -201,19 +256,73 @@ type sshTunnel struct {
 // Xray socks outbound never sees the port vanish (CONNECTs fail transiently while
 // reconnecting rather than the outbound looking misconfigured). Replaces any existing
 // tunnel for the same tag.
-func (m *sshOutManager) start(cfg SshOutboundConfig) error {
+// Returns the port actually bound, which is the requested one when cfg.SocksPort
+// is set and free, and a kernel-assigned one otherwise.
+func (m *sshOutManager) start(cfg SshOutboundConfig, allowRepick bool) (int, error) {
 	m.stop(cfg.Tag)
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.SocksPort))
+	ln, err := listenLoopback(cfg.SocksPort, allowRepick)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	cfg.SocksPort = ln.Addr().(*net.TCPAddr).Port
 	t := &sshTunnel{cfg: cfg, ln: ln, log: &procLog{}}
 	m.mu.Lock()
 	m.tunnels[cfg.Tag] = t
 	m.mu.Unlock()
 	go t.serveSocks()
 	go t.supervise()
-	return nil
+	return cfg.SocksPort, nil
+}
+
+// The band auto-allocated tunnel ports are drawn from. It starts above WARP's
+// SOCKS port (warpsocks.go DefaultSocksPort = 10808) and stays well clear of the
+// per-inbound bands at 12300/13300/14300 + inbound.Id.
+//
+// Deliberately NOT the kernel's own choice via ":0". That returns a port from the
+// ephemeral range (32768-60999 on Linux), which is the pool outgoing connections
+// are drawn from - and this port is PERSISTED. After a reboot the panel's own
+// dials (SSH, RADIUS, acme, update checks) can be handed the number the stored
+// config still expects the tunnel on, and Xray then talks to a stranger's socket.
+const (
+	sshOutPortFirst = 10810
+	sshOutPortLast  = 11309
+)
+
+// listenLoopback binds a tunnel's local SOCKS listener and returns it live.
+//
+// preferred > 0 is tried first and, if it binds, used: an existing tunnel keeps
+// the port the saved Xray outbound already names. Otherwise the band above is
+// scanned by ACTUALLY BINDING, and the first listener that succeeds is the one
+// returned - never probed-then-closed. That is what makes this safe without a
+// lock: two tunnels starting concurrently cannot land on the same port because
+// the kernel refuses the second bind and the loser simply advances.
+//
+// The ":0" fallback only runs if all 500 slots are held, where an ephemeral port
+// beats no tunnel at all.
+// allowRepick decides what happens when `preferred` is taken. A SAVE passes true:
+// it hands the resolved port back to the caller, who rewrites the outbound to
+// match, so moving is safe and is the only way an operator can recover a tunnel
+// whose port was stolen. BOOT passes false: nothing is listening to the answer
+// there, so a silent move would leave the saved outbound pointing at whatever
+// else now owns the old port. Failing is the recoverable outcome.
+func listenLoopback(preferred int, allowRepick bool) (net.Listener, error) {
+	if preferred > 0 {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", preferred))
+		if err == nil || !allowRepick {
+			return ln, err
+		}
+		logger.Warning("ssh outbound: local socks port", preferred,
+			"is taken, allocating another:", err)
+	}
+	for port := sshOutPortFirst; port <= sshOutPortLast; port++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			return ln, nil
+		}
+	}
+	logger.Warning("ssh outbound: no free port in", sshOutPortFirst, "-", sshOutPortLast,
+		"- falling back to an ephemeral one, which may not survive a reboot")
+	return net.Listen("tcp", "127.0.0.1:0")
 }
 
 func (m *sshOutManager) stop(tag string) {
@@ -328,12 +437,63 @@ func (t *sshTunnel) clientConfig() *ssh.ClientConfig {
 			return fmt.Errorf("host key mismatch (got %s)", ssh.FingerprintSHA256(key))
 		}
 	} else {
+		// Real trust-on-first-use. This used to log the fingerprint and return nil
+		// unconditionally, on EVERY reconnect - which is InsecureIgnoreHostKey with
+		// a log line, not TOFU: nothing was ever recorded, so nothing was ever
+		// compared, and a MITM on the SSH address could present a fresh key at any
+		// time. With password auth that hands over the password in plaintext and
+		// exposes all proxied traffic.
+		//
+		// Now the first key seen is adopted as the pin, persisted so it survives a
+		// restart, and enforced from then on. An operator who genuinely rotates the
+		// server key clears the field to re-learn.
 		cfg.HostKeyCallback = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			t.log.add("host key (TOFU) " + ssh.FingerprintSHA256(key) + " - paste it as the pin to enforce")
+			fp := ssh.FingerprintSHA256(key)
+			if learned := t.learnedKey.Load(); learned != nil {
+				if *learned == fp {
+					return nil
+				}
+				return fmt.Errorf("host key changed since first connect (trusted %s, got %s) - "+
+					"clear the host key pin to accept the new one", *learned, fp)
+			}
+			t.learnedKey.Store(&fp)
+			t.log.add("host key learned (trust on first use): " + fp)
+			// Off the handshake goroutine: persisting takes the config lock, which
+			// the Save that started this tunnel may still hold.
+			go persistLearnedHostKey(t.cfg.Tag, fp)
 			return nil
 		}
 	}
 	return cfg
+}
+
+// persistLearnedHostKey records a TOFU-adopted fingerprint against its tunnel so
+// the pin survives a panel restart.
+//
+// Updates in place only, never appends: the tunnel may have been deleted or
+// replaced while the handshake was in flight, and resurrecting it from a
+// background goroutine would be worse than losing the pin. A tunnel whose pin was
+// set by the operator meanwhile is left alone for the same reason.
+func persistLearnedHostKey(tag, fingerprint string) {
+	sshOutCfgMu.Lock()
+	defer sshOutCfgMu.Unlock()
+
+	var svc SshOutboundService
+	all := svc.load()
+	updated := false
+	for i := range all {
+		if all[i].Tag == tag && strings.TrimSpace(all[i].KnownHost) == "" {
+			all[i].KnownHost = fingerprint
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return
+	}
+	if err := svc.persist(all); err != nil {
+		logger.Warning("ssh outbound: could not record the learned host key for", tag, ":", err)
+	}
 }
 
 func (t *sshTunnel) serveSocks() {

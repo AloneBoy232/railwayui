@@ -12,6 +12,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/backend"
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 // MenuScriptPath is where the `vpn-ui` management menu is installed, by
@@ -163,18 +164,73 @@ func Uninstall(opts UninstallOptions) *UninstallReport {
 		removePath(r, backend.LibreswanNssDir) // /etc/ipsec.d — only ours on the bundled path
 	}
 
+	// 9b. Everything the CORE CATALOG owns, driven off the catalog rather than a
+	//     hand-written list.
+	//
+	//     The hand-written steps above are frozen at the four-protocol era: they
+	//     name xl2tpd, pptpd, openvpn and libreswan and nothing else. Six cores
+	//     shipped after that (openconnect, sstp, ikev2, wgc, awg, mtproto, ssh),
+	//     each declaring its own paths/globs/feats in coreCatalog, and none of it
+	//     reached here — a verified uninstall on Ubuntu 24.04 left /etc/ocserv,
+	//     /etc/vpn-ui-ikev2, /etc/strongswan.conf, /var/run/{ocserv,charon.vici}
+	//     and both bundle trees behind. Iterating the catalog means core #11 is
+	//     covered the day it is added, with no second list to remember.
+	//
+	//     Features are removed unconditionally here, unlike the per-core path
+	//     which reference-counts them against the cores that REMAIN: this is a
+	//     full uninstall, so nothing remains to keep them for.
+	for _, spec := range coreCatalog {
+		if spec.builtin {
+			continue
+		}
+		for _, p := range spec.paths {
+			removePath(r, p)
+		}
+		for _, g := range spec.globs {
+			matches, err := filepath.Glob(g)
+			if err != nil {
+				continue
+			}
+			for _, m := range matches {
+				removePath(r, m)
+			}
+		}
+	}
+	seenFeat := map[string]bool{}
+	for _, spec := range coreCatalog {
+		for _, f := range spec.feats {
+			// featPppd/featPptpCtrl are already handled above, and featKernelMods
+			// is deliberately a no-op (the host's kernel package is not ours).
+			if seenFeat[f] || f == featPppd || f == featPptpCtrl || f == featKernelMods {
+				continue
+			}
+			seenFeat[f] = true
+			if step := removeFeature(f); step.Msg != "" {
+				r.Removed = append(r.Removed, step.Name+": "+step.Msg)
+			}
+		}
+	}
+
 	// 10. The bin/ dir next to the binary (xray core, geo files, config.json, and
 	//     the flat VPN daemons — all extract here now). Resolve a relative path
 	//     against the exe's dir so it works regardless of the caller's working dir.
 	binDir := config.GetBinFolderPath()
+	base := "."
+	if opts.ExePath != "" {
+		base = filepath.Dir(opts.ExePath)
+	}
 	if !filepath.IsAbs(binDir) {
-		base := "."
-		if opts.ExePath != "" {
-			base = filepath.Dir(opts.ExePath)
-		}
 		binDir = filepath.Join(base, binDir)
 	}
 	removePath(r, binDir)
+
+	// 10b. The other two directories that live beside the binary. `backups` holds
+	//      copies of the DATABASE, i.e. every admin's bcrypt hash and every
+	//      client's credentials, so leaving it on a decommissioned host is the
+	//      worst of the leftovers even though it is the quietest. `cert` holds the
+	//      panel's TLS key and any issued certificates.
+	removePath(r, filepath.Join(base, "cert"))
+	removePath(r, filepath.Join(base, "backups"))
 
 	// 11. Kept — not removed (shared, or irreversible without a backup we never took).
 	r.Kept = append(r.Kept,
@@ -196,14 +252,38 @@ func stopVpnDaemons(r *UninstallReport, exePath string) {
 	if !commandExists("pkill") {
 		return
 	}
-	for _, d := range []string{"openvpn", "xl2tpd", "pptpd"} {
+	// accel-pppd and telemt were missing here even though the orphan reaper in
+	// procmgr.go has known about them for as long as they have existed. Same
+	// omission, same consequence: a daemon still holding :443 (or the MTProto
+	// port) after the panel that supervised it is gone.
+	for _, d := range []string{"openvpn", "xl2tpd", "pptpd", "accel-pppd", "telemt"} {
 		bin := daemonBin(d)
 		if bin == d {
 			continue // unresolved bare name — avoid a too-broad match
 		}
 		_ = exec.Command("pkill", "-KILL", "-f", bin).Run()
 	}
-	_ = exec.Command("pkill", "-KILL", "-f", backend.LibreswanBundleRoot+"/libexec/ipsec/pluto.bin").Run()
+	// Both IPsec planes. libreswan's pluto is the legacy one; charon is the
+	// SHARED plane that L2TP and IKEv2 both run on, so on any host that had
+	// either of them a surviving charon holding UDP 500/4500 is the NORMAL
+	// outcome, not an edge case.
+	for _, p := range []string{
+		backend.LibreswanBundleRoot + "/libexec/ipsec/pluto.bin",
+		backend.StrongswanBundleRoot + "/libexec/ipsec/charon.bin",
+	} {
+		_ = exec.Command("pkill", "-KILL", "-f", p).Run()
+	}
+	// ocserv RETITLES its processes, so a -f match on the binary path misses
+	// them; only an exact-name pass finds it. Same list procmgr.go reaps.
+	for _, n := range []string{"ocserv-main", "ocserv-sm", "ocserv-worker", "ocserv"} {
+		_ = exec.Command("pkill", "-KILL", "-x", n).Run()
+	}
+	// The Xray core is not a procMgr child, so nothing else stops it: the panel
+	// is SIGKILLed below, which skips any shutdown hook, and it would be left
+	// holding every inbound port plus the API port.
+	if bin := xray.GetBinaryPath(); bin != "" {
+		_ = exec.Command("pkill", "-KILL", "-f", bin).Run()
+	}
 
 	// Kill any OTHER panel process (e.g. the one the just-removed unit ran).
 	// Exclude ourselves AND our ancestor chain: `pgrep -f <exePath>` also matches

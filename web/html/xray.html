@@ -256,6 +256,11 @@
       outboundTestUrl: 'https://www.google.com/generate_204',
       oldOutboundTestUrl: 'https://www.google.com/generate_204',
       inboundTags: [],
+      // Tags of the SSH tunnels the panel manages. What lands in the Xray config
+      // for one of these is a `socks` outbound (Xray core has no ssh outbound),
+      // so this is the only way to tell an SSH outbound apart from a real socks
+      // one and label it honestly in the table.
+      sshOutboundTags: [],
       outboundsTraffic: [],
       outboundTestStates: {}, // Track testing state and results for each outbound
       saveBtnDisable: true,
@@ -384,6 +389,26 @@
     methods: {
       loading(spinning = true) {
         this.loadingStates.spinning = spinning;
+      },
+      // Raw axios rather than HttpUtil: this only decides a label, so a failed
+      // fetch should leave the row reading `socks` rather than red-bar the page.
+      async loadSshOutboundTags() {
+        try {
+          const resp = await axios.post('/panel/xray/sshoutbound/list');
+          const list = resp && resp.data ? resp.data.obj : null;
+          this.sshOutboundTags = Array.isArray(list) ? list.map(t => t.tag) : [];
+        } catch (e) {
+          this.sshOutboundTags = [];
+        }
+      },
+      // What to call an outbound in the UI. An SSH tunnel is a socks outbound in
+      // the config and must stay one, but calling it "socks" on screen hides what
+      // the operator actually created.
+      outboundProtocolLabel(outbound) {
+        if (outbound && outbound.tag && this.sshOutboundTags.includes(outbound.tag)) {
+          return Protocols.SSH;
+        }
+        return outbound ? outbound.protocol : '';
       },
       async getOutboundsTraffic() {
         const msg = await HttpUtil.get("/panel/xray/getOutboundsTraffic");
@@ -593,8 +618,30 @@
         outModal.show({
           title: '{{ i18n "pages.xray.outbound.addOutbound"}}',
           okText: '{{ i18n "pages.xray.outbound.addOutbound" }}',
-          confirm: (outbound) => {
+          confirm: async (outbound) => {
             outModal.loading();
+            // An ssh outbound is a panel-managed tunnel, so the tunnel has to
+            // exist before the outbound that points at it. If the save is
+            // refused (bad port, port already taken by another tunnel) nothing
+            // is added: an outbound aimed at a local proxy that was never bound
+            // is a dead outbound, and a confusing one, since it looks fine.
+            //
+            // outbound is already the serialised form, so the protocol reads
+            // 'socks' here; the modal's model is what still knows it is ssh.
+            if (outModal.outbound.protocol === Protocols.SSH) {
+              const port = await this.saveSshTunnel(outModal.outbound);
+              if (!port) {
+                outModal.loading(false);
+                return;
+              }
+              // The server allocated the loopback port, so the outbound has to be
+              // re-serialised: the copy handed to this callback was built before
+              // the port existed and would point at 127.0.0.1:0.
+              outModal.outbound.settings.socksPort = port;
+              outbound = outModal.outbound.toJson();
+              // So the new row reads "ssh" rather than "socks" straight away.
+              await this.loadSshOutboundTags();
+            }
             if (outbound.tag.length > 0) {
               this.templateSettings.outbounds.push(outbound);
               this.outboundSettings = JSON.stringify(this.templateSettings.outbounds);
@@ -602,27 +649,88 @@
             outModal.close();
           },
           isEdit: false,
-          tags: this.templateSettings.outbounds.map(obj => obj.tag)
+          // Tunnel tags count as taken even when no outbound carries them yet.
+          // Save() upserts by tag, so reusing one would stop the live tunnel,
+          // rebind its port, and - with the secret fields left blank, which is
+          // the normal edit flow - send the OLD server's stored password to the
+          // newly typed address.
+          tags: this.outboundAndTunnelTags()
         });
       },
+      // Every tag an outbound may not reuse: the ones in the template plus the
+      // ones the SSH tunnels hold. `except` drops the row being edited so it does
+      // not collide with itself.
+      outboundAndTunnelTags(except) {
+        const tags = this.templateSettings.outbounds.map(obj => obj.tag);
+        this.sshOutboundTags.forEach(t => { if (!tags.includes(t)) tags.push(t); });
+        return except === undefined ? tags : tags.filter(t => t !== except);
+      },
+      // Creates (or replaces) the SSH tunnel behind an ssh-shaped outbound and
+      // returns the loopback SOCKS port the server bound for it, or 0 if the
+      // tunnel could not be raised. The caller needs that port to point the
+      // outbound at it, and needs the 0 to refuse adding an outbound with
+      // nothing listening behind it.
+      //
+      // The secrets travel here and only here: they are never written into the
+      // Xray config.
+      async saveSshTunnel(model) {
+        const s = model.settings;
+        const msg = await HttpUtil.post('/panel/xray/sshoutbound/save', {
+          tag: model.tag,
+          address: s.address,
+          port: s.port,
+          username: s.username,
+          authType: s.authType,
+          password: s.password,
+          privateKey: s.privateKey,
+          passphrase: s.passphrase,
+          knownHost: s.knownHost,
+          socksPort: s.socksPort,
+        });
+        if (!msg || !msg.success || !msg.obj) return 0;
+        return Number(msg.obj.socksPort) || 0;
+      },
       editOutbound(index) {
+        const editing = app.templateSettings.outbounds[index];
         outModal.show({
           title: '{{ i18n "pages.xray.outbound.editOutbound"}} ' + (index + 1),
-          outbound: app.templateSettings.outbounds[index],
-          confirm: (outbound) => {
+          outbound: editing,
+          confirm: async (outbound) => {
             outModal.loading();
+            // Switching an existing row's protocol TO ssh has to raise the tunnel
+            // too, exactly as adding one does. Without this the row is saved as a
+            // socks outbound aimed at 127.0.0.1:0, with nothing behind it and no
+            // error anywhere.
+            if (outModal.outbound.protocol === Protocols.SSH) {
+              const port = await this.saveSshTunnel(outModal.outbound);
+              if (!port) {
+                outModal.loading(false);
+                return;
+              }
+              outModal.outbound.settings.socksPort = port;
+              outbound = outModal.outbound.toJson();
+              await this.loadSshOutboundTags();
+            }
             this.templateSettings.outbounds[index] = outbound;
             this.outboundSettings = JSON.stringify(this.templateSettings.outbounds);
             outModal.close();
           },
           isEdit: true,
-          tags: this.outboundData.filter((o) => o.key != index).map(obj => obj.tag)
+          tags: this.outboundAndTunnelTags(editing ? editing.tag : undefined)
         });
       },
-      deleteOutbound(index) {
-        outbounds = this.templateSettings.outbounds;
+      // Removing the row has to remove the tunnel behind it. Splicing alone left
+      // the tunnel in the `sshOutbounds` setting holding its loopback port and
+      // still dialling, invisible on this page and raised again at every boot.
+      async deleteOutbound(index) {
+        const outbounds = this.templateSettings.outbounds;
+        const gone = outbounds[index];
         outbounds.splice(index, 1);
         this.outboundSettings = JSON.stringify(outbounds);
+        if (gone && gone.tag && this.sshOutboundTags.includes(gone.tag)) {
+          await HttpUtil.post('/panel/xray/sshoutbound/delete', { tag: gone.tag });
+          await this.loadSshOutboundTags();
+        }
       },
       setFirstOutbound(index) {
         outbounds = this.templateSettings.outbounds;
@@ -1128,7 +1236,9 @@
       if (window.location.protocol !== "https:" && !SecAlertDismissal.isDismissed()) {
         this.showAlert = true;
       }
-      await this.getXraySetting();
+      // In parallel: awaiting the tags AFTER the settings let the table paint once
+      // with an empty tag list, so every ssh row flashed "socks" before correcting.
+      await Promise.all([this.getXraySetting(), this.loadSshOutboundTags()]);
       await this.loadCustomGeoAliases();
       await this.getXrayResult();
       await this.getOutboundsTraffic();

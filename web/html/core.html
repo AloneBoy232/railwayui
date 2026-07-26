@@ -294,6 +294,34 @@
     </div>
   </a-modal>
 
+  <!-- Inbound disposition. Removing a core takes the daemon its inbounds run on,
+       so this is asked rather than assumed. Keeping them is a legitimate answer:
+       the inbounds survive and start working again if the core is reinstalled. -->
+  <a-modal v-model="inboundChoice.visible" :title="'{{ i18n "pages.core.uninstallInboundsTitle" }}'"
+    :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : 520"
+    ok-text='{{ i18n "pages.core.uninstallCore" }}' cancel-text='{{ i18n "cancel" }}'
+    ok-type="danger" :closable="true" :mask-closable="false"
+    @ok="confirmInboundChoice" @cancel="() => inboundChoice.visible = false">
+    <a-alert type="warning" show-icon :style="{ marginBottom: '16px' }">
+      <template slot="message">
+        [[ inboundChoice.count ]] {{ i18n "pages.core.uninstallInboundsBody" }}
+      </template>
+    </a-alert>
+    <!-- a-radio labels are single-line with a fixed height in antd-vue 1.7.8; the
+         whiteSpace/height/lineHeight overrides let the descriptions wrap. -->
+    <a-radio-group v-model="inboundChoice.mode"
+      :style="{ display: 'flex', flexDirection: 'column', gap: '12px' }">
+      <a-radio value="delete" :style="{ whiteSpace: 'normal', height: 'auto', lineHeight: '1.4' }">
+        <span :style="{ fontWeight: 600, color: 'var(--error)' }">{{ i18n "pages.core.uninstallInboundsDelete" }}</span>
+        <div class="bo-muted" :style="{ marginLeft: '24px' }">{{ i18n "pages.core.uninstallInboundsDeleteDesc" }}</div>
+      </a-radio>
+      <a-radio value="keep" :style="{ whiteSpace: 'normal', height: 'auto', lineHeight: '1.4' }">
+        <span :style="{ fontWeight: 600 }">{{ i18n "pages.core.uninstallInboundsKeep" }}</span>
+        <div class="bo-muted" :style="{ marginLeft: '24px' }">{{ i18n "pages.core.uninstallInboundsKeepDesc" }}</div>
+      </a-radio>
+    </a-radio-group>
+  </a-modal>
+
   <!-- Provision live log: a real streaming terminal console. Closing mid-run is
        safe — provisioning runs server-side and the poll keeps ticking. -->
   <a-modal v-model="provisionVisible" :title="null" :footer="null"
@@ -463,6 +491,9 @@
       runKind: 'setup',
       uninstallRunning: false,
       keptShared: [],
+      // "these cores still have inbounds" prompt. `answered` is what lets the
+      // second startUninstall call through instead of re-opening the dialog.
+      inboundChoice: { visible: false, answered: false, cores: [], count: 0, mode: 'delete' },
       // Core picker.
       catalog: [],
       pickerVisible: false,
@@ -579,7 +610,12 @@
       // install or remove.
       rowEnabled(c) {
         if (c.builtin) return false;
-        if (this.pickerMode === 'uninstall') return c.installed && !c.inbounds;
+        // A core with inbounds is selectable now. It used to be greyed out, which
+        // left the operator no way forward at all: the note said "still has N
+        // inbounds" and the row simply could not be ticked. Picking it now opens
+        // the disposition prompt instead, where they choose to delete those
+        // inbounds or keep them.
+        if (this.pickerMode === 'uninstall') return c.installed;
         return !c.installed;
       },
       // The one-line reason a row cannot be picked, so a disabled checkbox is
@@ -706,16 +742,39 @@
           this.pollProvision();
         }, 600);
       },
+      // Re-enters startUninstall with the answer recorded, which is what lets it
+      // past the prompt this time.
+      confirmInboundChoice() {
+        this.inboundChoice.visible = false;
+        this.inboundChoice.answered = true;
+        this.startUninstall(this.inboundChoice.cores);
+      },
       // startUninstall removes the given cores. The server refuses up front when
       // a core still has inbounds or is not installed, and that refusal arrives
       // as a plain failed response, so the console is closed again rather than
       // left open on a run that never began.
       async startUninstall(cores) {
         if (this.provisionRunning || this.uninstallRunning) return;
+        // Removing a core takes away the daemon its inbounds run on, so that
+        // cannot be decided silently. Ask first; the server refuses an uninstall
+        // that carries no answer, so this prompt is the only way through.
+        const affected = (cores || []).reduce((n, name) => {
+          const c = this.pickerCores.find(x => x.name === name);
+          return n + ((c && c.inbounds) || 0);
+        }, 0);
+        if (affected > 0 && !this.inboundChoice.answered) {
+          this.inboundChoice = {
+            visible: true, answered: false, cores: cores || [],
+            count: affected, mode: 'delete',
+          };
+          return;
+        }
+        const inbounds = this.inboundChoice.answered ? this.inboundChoice.mode : '';
+        this.inboundChoice.answered = false;
         this.resetConsole('uninstall');
         this.uninstallRunning = true;
         const msg = await HttpUtil.post('/panel/core/uninstall',
-          { cores: (cores || []).join(',') });
+          { cores: (cores || []).join(','), inbounds: inbounds });
         if (!msg || !msg.success) {
           this.provisionRunning = false;
           this.uninstallRunning = false;

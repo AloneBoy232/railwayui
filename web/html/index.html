@@ -82,11 +82,13 @@
           <dt class="bo-spec-key">{{ i18n "pages.index.serverUptime" }}</dt>
           <dd class="bo-spec-val num">[[ TimeFormatter.formatUptime(status.uptime) ]]</dd>
         </div>
+        {{ if .perms.accessCoreSettings }}
         <div class="bo-spec-row">
           <span class="bo-spec-ico bo-spec-ico--health"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-shield"></use></svg></span>
           <dt class="bo-spec-key">{{ i18n "pages.index.vpnServices" }}</dt>
           <dd class="bo-spec-val num" :class="allCoresHealthy ? 'bo-ok' : 'bo-warn'">[[ healthSummary ]]</dd>
         </div>
+        {{ end }}
         <div class="bo-spec-row" v-if="status.cpuModel">
           <span class="bo-spec-ico bo-spec-ico--cpu"><svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-cpu"></use></svg></span>
           <dt class="bo-spec-key">CPU</dt>
@@ -290,7 +292,12 @@
       </div>
     </article>
 
-    <!-- ===== VPN services ===== -->
+    <!-- ===== VPN services =====
+         Core Settings only. The daemon states come from /panel/core/status,
+         which that permission gates, and every chip navigates to the Core page,
+         which it also gates. Rendered for anyone else the tile would be twelve
+         chips reading "unknown" that redirect on click. -->
+    {{ if .perms.accessCoreSettings }}
     <article class="bo-tile bo-t-svc" aria-label='{{ i18n "pages.index.vpnServices" }}'>
       <div class="bo-tile-head">
         <h3 class="bo-tile-title">{{ i18n "pages.index.vpnServices" }}</h3>
@@ -307,6 +314,7 @@
         </button>
       </div>
     </article>
+    {{ end }}
 
     <!-- ===== Xray ===== -->
     <article class="bo-tile bo-t-xray" aria-label='{{ i18n "pages.index.xrayStatus" }}'>
@@ -482,6 +490,27 @@
     <p class="bo-relnotes-foot">
       <svg class="bo-icon bo-icon-14" aria-hidden="true"><use href="#bo-i-info"></use></svg>
       {{ i18n "pages.index.updateModalIntro" }}
+    </p>
+  </a-modal>
+
+  <!-- Post-update confirmation. Shown once, on the first overview load after the
+       panel restarted into a new binary: the update flow reloads this page while
+       the old process is still going down, so without it the operator is left
+       looking at a dashboard with no evidence the swap actually took. The server
+       decides when this opens (it consumes a one-shot record), never the client. -->
+  <a-modal id="panel-updated-modal" v-model="updatedModal.visible"
+    title='{{ i18n "pages.index.updateDoneTitle" }}' :closable="true"
+    :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : 420"
+    ok-text='{{ i18n "confirm" }}' :cancel-button-props="{ style: { display: 'none' } }"
+    @ok="() => updatedModal.visible = false">
+    <div class="bo-relnotes-head">
+      <span class="bo-relnotes-ver bo-relnotes-ver--new num">v[[ updatedModal.to ]]</span>
+    </div>
+    <p>{{ i18n "pages.index.updateDoneBody" }} <span class="num">v[[ updatedModal.to ]]</span>.</p>
+    <!-- Hidden on a reinstall of the same version, where it would read
+         "Updated from v1.8.3" next to "now running v1.8.3". -->
+    <p class="bo-relnotes-foot" v-if="updatedModal.from && updatedModal.from !== updatedModal.to">
+      {{ i18n "pages.index.updateDoneFrom" }} <span class="num">v[[ updatedModal.from ]]</span>
     </p>
   </a-modal>
 
@@ -1395,10 +1424,10 @@
         logs.reverse().forEach((log, index) => {
           let outboundColor = '';
           if (log.Event === 1) {
-            outboundColor = ' style="color: #e04141;"'; //red for blocked
+            outboundColor = ' style="color: var(--error);"'; // blocked
           }
           else if (log.Event === 2) {
-            outboundColor = ' style="color: #3c89e8;"'; //blue for proxies
+            outboundColor = ' style="color: var(--info);"'; // proxied
           }
 
           let text = ``;
@@ -1501,6 +1530,9 @@
       panelLoc: { checked: false, found: false, countryCode: '', ipv4: '', ipv6: '' },
       // The release-notes dialog shown before an update is armed.
       updateModal: { visible: false },
+      // Opened only by the server's one-shot post-update record; see
+      // announceUpdateResult().
+      updatedModal: { visible: false, from: '', to: '' },
       // `copied` is the index of the row showing its "copied" confirmation, or
       // -1 for none. An index rather than a boolean so two rows carrying the
       // SAME address (several chains share one) confirm independently.
@@ -1945,11 +1977,37 @@
       },
 
       // --- VPN daemon statuses (dashboard card) --------------------------
+      // /panel/core is gated on the Core Settings permission, so an admin or
+      // reseller without it is skipped entirely rather than sent to be refused:
+      // the try/catch below cannot swallow that refusal (HttpUtil resolves a
+      // failed call instead of throwing, and toasts it on the way), so calling
+      // anyway put a permission error on screen at every dashboard load. The
+      // card that consumes this is hidden for the same callers.
       async getCoreStatuses() {
+        if (!PERMS.accessCoreSettings) return;
         try {
           const msg = await HttpUtil.get('/panel/core/status');
           if (msg && msg.success && msg.obj) this.coreStatuses = msg.obj.cores || [];
         } catch (e) { /* dashboard card is best-effort */ }
+      },
+      // Announces, once, that the panel came back from an in-panel update. The
+      // server owns the "once": reading /updateResult consumes the record it
+      // wrote just before restarting, so reloading the overview afterwards does
+      // not re-announce, and an ordinary restart has nothing to announce.
+      //
+      // Super-admin only, like updatePanel itself, and raw axios rather than
+      // HttpUtil so a plain admin's overview does not get a permission toast for
+      // asking. Every failure is silent: this is good news or nothing.
+      async announceUpdateResult() {
+        if (!PERMS.superAdmin) return;
+        try {
+          const resp = await axios.get('/panel/api/server/updateResult');
+          const obj = resp && resp.data ? resp.data.obj : null;
+          if (!obj || !obj.updated) return;
+          this.updatedModal.from = obj.from || '';
+          this.updatedModal.to = obj.to || '';
+          this.updatedModal.visible = true;
+        } catch (e) { /* nothing to announce */ }
       },
       // --- Panel self-update (VPN-UI card) ------------------------------
       // Runs automatically on every overview load (manual=false, silent) and on
@@ -2572,6 +2630,7 @@
       this.fetchServerName();
       this.fetchPanelLocation();
       this.checkForUpdate(false); // best-effort update check on every overview load
+      this.announceUpdateResult(); // "Updated to vX" if this load follows a self-update
 
       // Setup WebSocket for real-time updates
       if (window.wsClient) {

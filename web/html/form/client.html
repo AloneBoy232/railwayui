@@ -192,7 +192,7 @@
             <template slot="title">
                 <span>{{ i18n "pages.inbounds.IPLimitlogclear" }}</span>
             </template>
-            <span :style="{ color: '#FF4D4F' }">
+            <span :style="{ color: 'var(--error)' }">
                 <a-icon
                     type="delete"
                     @click="clearDBClientIps(client.email)"

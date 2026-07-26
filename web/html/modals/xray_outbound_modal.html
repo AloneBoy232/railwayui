@@ -66,6 +66,13 @@
                 this.cm.on('change',editor => {
                     value = editor.getValue();
                     if(this.isJsonString(value)){
+                        // An ssh outbound serialises to the socks outbound that
+                        // fronts its tunnel, so reading it back would turn the
+                        // form into a socks one and silently drop the server,
+                        // credentials and key the operator just typed. The JSON
+                        // stays a read-only view of what Xray will get; the ssh
+                        // form above remains the source of truth.
+                        if (this.outbound.protocol === Protocols.SSH) return;
                         this.outbound = Outbound.fromJson(JSON.parse(value));
                         this.check();
                     }

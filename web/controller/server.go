@@ -74,6 +74,11 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/distroStatus", a.distroStatus)
 	g.GET("/checkUpdate", a.checkUpdate)
 	g.GET("/updateProgress", a.updateProgress)
+	// Reports (once) that the panel came back from a self-update. Super-admin only
+	// to match updatePanel: reading it CLEARS it, so an ordinary admin loading the
+	// dashboard first would otherwise consume the notice meant for whoever ran the
+	// update.
+	g.GET("/updateResult", requireSuperAdmin(), a.updateResult)
 
 	// Renaming the server relabels the panel for every admin, so it follows the panel
 	// settings permission. Reading it stays open: the overview shows the label, and
@@ -350,6 +355,17 @@ func (a *ServerController) cancelUpdate(c *gin.Context) {
 // byte counters, polled by the overview to render the progress bar + speed meter.
 func (a *ServerController) updateProgress(c *gin.Context) {
 	jsonObj(c, a.serverService.PanelUpdateProgress(), nil)
+}
+
+// updateResult reports whether this panel process is the one that came up after
+// an in-panel self-update, and what version it replaced. Reading CONSUMES the
+// record, so the overview announces a given update exactly once however many
+// times it is reloaded afterwards.
+//
+// `updated` false is the ordinary answer: any restart that was not a self-update
+// leaves nothing to report.
+func (a *ServerController) updateResult(c *gin.Context) {
+	jsonObj(c, a.serverService.TakePanelUpdateResult(), nil)
 }
 
 // installXray installs or updates Xray to the specified version.

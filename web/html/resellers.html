@@ -55,7 +55,7 @@
                                delete the accounts too or hand them to the admin; a childless one
                                deletes straight away. -->
                           <a-menu-item @click="delReseller(reseller)">
-                            <span :style="{ color: '#FF4D4F' }">
+                            <span :style="{ color: 'var(--error)' }">
                               <a-icon type="delete"></a-icon>
                               <span>{{ i18n "delete" }}</span>
                             </span>
@@ -196,7 +196,9 @@
             <div class="bo-muted" :style="{ marginLeft: '24px' }">{{ i18n "pages.resellers.deleteKeepDesc" }}</div>
           </a-radio>
           <a-radio value="cascade" :style="{ whiteSpace: 'normal', height: 'auto', lineHeight: '1.4' }">
-            <span :style="{ fontWeight: 600, color: '#FF4D4F' }">{{ i18n "pages.resellers.deleteCascade" }}</span>
+            <!-- var(--error), not a raw hex: the token is what the three themes
+                 (light / dark / ultra-dark) actually redefine. -->
+            <span :style="{ fontWeight: 600, color: 'var(--error)' }">{{ i18n "pages.resellers.deleteCascade" }}</span>
             <div class="bo-muted" :style="{ marginLeft: '24px' }">{{ i18n "pages.resellers.deleteCascadeDesc" }}</div>
           </a-radio>
         </a-radio-group>

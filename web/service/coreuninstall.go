@@ -78,10 +78,23 @@ func (s *CoreService) CoreUninstallStatus() CoreUninstallState {
 	}
 }
 
-// CanUninstallCores checks a requested removal before anything is touched. It
-// returns an error naming the first blocker, so the dialog can refuse with a
-// reason instead of half-removing a core.
-func (s *CoreService) CanUninstallCores(names []string) error {
+// Inbound dispositions for a core uninstall. A core's inbounds cannot simply be
+// ignored: the daemon serving them is about to be removed.
+const (
+	// InboundsBlock is the default and the only one that refuses. It exists so a
+	// caller that never asked the question (the CLI, an old client) still cannot
+	// silently strand inbounds.
+	InboundsBlock = ""
+	// InboundsDelete removes the core's inbounds along with it.
+	InboundsDelete = "delete"
+	// InboundsKeep leaves them in the database, deliberately non-functional, so
+	// the operator can reinstall the core later and have them work again.
+	InboundsKeep = "keep"
+)
+
+// CanUninstallCores reports whether the selection can be removed, given what the
+// caller decided to do with any inbounds those cores still serve.
+func (s *CoreService) CanUninstallCores(names []string, inbounds string) error {
 	selected := validCoreNames(names)
 	if len(selected) == 0 {
 		return fmt.Errorf("no installable core selected")
@@ -92,20 +105,58 @@ func (s *CoreService) CanUninstallCores(names []string) error {
 		if !installed[n] {
 			return fmt.Errorf("%s is not installed", coreDisplayName(n))
 		}
-		if counts[n] > 0 {
-			return fmt.Errorf("%s still has %d inbound(s); delete them first",
+		// Only an undecided caller is refused. Once the operator has been shown
+		// the choice and made it, both answers are legitimate: delete the
+		// inbounds, or keep them and accept that they stop working until the
+		// core is reinstalled.
+		if counts[n] > 0 && inbounds != InboundsDelete && inbounds != InboundsKeep {
+			return fmt.Errorf("%s still has %d inbound(s); choose whether to delete them or keep them",
 				coreDisplayName(n), counts[n])
 		}
 	}
 	return nil
 }
 
+// deleteCoreInbounds removes every inbound served by the given cores. Used for
+// the InboundsDelete disposition, before the daemons go away.
+func (s *CoreService) deleteCoreInbounds(names []string) (int, error) {
+	wanted := map[string]bool{}
+	for _, n := range validCoreNames(names) {
+		wanted[n] = true
+	}
+	var inboundService InboundService
+	all, err := inboundService.GetAllInbounds()
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, in := range all {
+		if !wanted[protocolCoreName(string(in.Protocol))] {
+			continue
+		}
+		if _, err := inboundService.DelInbound(in.Id); err != nil {
+			return removed, fmt.Errorf("deleting inbound %q: %w", in.Remark, err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 // StartCoreUninstall removes the given cores in the background, returning false
 // if a provisioning or uninstall run is already in flight (they touch the same
 // files, so they must not overlap).
-func (s *CoreService) StartCoreUninstall(names []string) (bool, error) {
-	if err := s.CanUninstallCores(names); err != nil {
+func (s *CoreService) StartCoreUninstall(names []string, inbounds string) (bool, error) {
+	if err := s.CanUninstallCores(names, inbounds); err != nil {
 		return false, err
+	}
+	// Delete BEFORE the daemons go, so the normal delete path still has a live
+	// backend to tear each inbound's own state down with.
+	if inbounds == InboundsDelete {
+		if n, err := s.deleteCoreInbounds(names); err != nil {
+			return false, err
+		} else if n > 0 {
+			logger.Info("core uninstall: deleted", n, "inbound(s) belonging to", names)
+		}
 	}
 	provisionRun.mu.Lock()
 	provisioning := provisionRun.running
@@ -145,8 +196,8 @@ func (s *CoreService) StartCoreUninstall(names []string) (bool, error) {
 
 // UninstallCores removes cores synchronously and returns the full report. This
 // is the collected form of StartCoreUninstall, for the CLI and for tests.
-func (s *CoreService) UninstallCores(names []string) (*CoreUninstallReport, error) {
-	if err := s.CanUninstallCores(names); err != nil {
+func (s *CoreService) UninstallCores(names []string, inbounds string) (*CoreUninstallReport, error) {
+	if err := s.CanUninstallCores(names, inbounds); err != nil {
 		return nil, err
 	}
 	selected := validCoreNames(names)
@@ -440,6 +491,18 @@ func removeFeature(feat string) ProvisionStep {
 		}
 		if removeIfPresent("/etc/strongswan.conf") {
 			removed = append(removed, "/etc/strongswan.conf")
+		}
+		// charon's control socket. Removed HERE rather than from the ikev2 catalog
+		// entry precisely because charon is shared: this branch only runs once
+		// neither L2TP nor IKEv2 is left, so deleting the socket cannot pull it out
+		// from under a still-running charon that L2TP is using.
+		if removeIfPresent("/var/run/charon.vici") {
+			removed = append(removed, "/var/run/charon.vici")
+		}
+		// The shared charon config root. Named after IKEv2 for historical reasons
+		// but written for L2TP too, so it can only go once neither remains.
+		if removeIfPresent(ikev2ConfigRoot) {
+			removed = append(removed, ikev2ConfigRoot)
 		}
 		return ProvisionStep{Name: "remove strongSwan (IPsec) bundle", OK: true, Msg: pathsMsg(removed)}
 

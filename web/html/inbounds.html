@@ -134,7 +134,7 @@
                           {{ i18n "pages.inbounds.resetAllClientTraffics" }}
                         </a-menu-item>
                         <a-menu-item key="delDepletedClients"
-                          :style="{ color: '#FF4D4F' }">
+                          :style="{ color: 'var(--error)' }">
                           <a-icon type="rest"></a-icon>
                           {{ i18n "pages.inbounds.delDepletedClients" }}
                         </a-menu-item>
@@ -296,7 +296,7 @@
                               {{ i18n "pages.inbounds.exportPdf" }}
                             </a-menu-item>
                             <a-menu-item key="delDepletedClients"
-                              :style="{ color: '#FF4D4F' }">
+                              :style="{ color: 'var(--error)' }">
                               <a-icon type="rest"></a-icon>
                               {{ i18n "pages.inbounds.delDepletedClients" }}
                             </a-menu-item>
@@ -320,7 +320,7 @@
                             "pages.inbounds.clone"}}
                           </a-menu-item>
                           <a-menu-item key="delete">
-                            <span :style="{ color: '#FF4D4F' }">
+                            <span :style="{ color: 'var(--error)' }">
                               <a-icon type="delete"></a-icon> {{ i18n "delete"}}
                             </span>
                           </a-menu-item>
@@ -1383,8 +1383,11 @@
         const settings = msg.obj || {};
         this.expireDiff = settings.expireDiff * 86400000;
         this.trafficDiff = settings.trafficDiff * 1073741824;
-        this.defaultCert = settings.defaultCert;
-        this.defaultKey = settings.defaultKey;
+        // Withheld from admins/resellers who hold no Panel Settings permission (they
+        // cannot author an inbound, which is the only thing these pre-fill), so keep
+        // the empty-string default rather than writing undefined into the form.
+        this.defaultCert = settings.defaultCert ?? '';
+        this.defaultKey = settings.defaultKey ?? '';
         this.tgBotEnable = settings.tgBotEnable;
         this.subSettings = {
           enable: settings.subEnable,
