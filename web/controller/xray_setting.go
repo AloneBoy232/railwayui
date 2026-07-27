@@ -64,7 +64,7 @@ func (a *XraySettingController) getXraySetting(c *gin.Context) {
 	// Strip any such wrapper here, and heal the DB if we found one so
 	// the next read is O(1) instead of climbing the same pile again.
 	if unwrapped := service.UnwrapXrayTemplateConfig(xraySetting); unwrapped != xraySetting {
-		if saveErr := a.XraySettingService.SaveXraySetting(unwrapped); saveErr == nil {
+		if saveErr := a.XraySettingService.RepairXrayTemplate(unwrapped); saveErr == nil {
 			xraySetting = unwrapped
 		} else {
 			// Don't fail the read — just serve the unwrapped value

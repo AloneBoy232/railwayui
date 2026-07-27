@@ -19,6 +19,7 @@
 //	core/<goarch>/xray      the pinned core binary for that architecture
 //	core/geoip.dat          base geo data (architecture-independent)
 //	core/geosite.dat
+//	core/geo{ip,site}_{IR,RU}.dat   country geo data, absent under GEO_LEAN=1
 package corebundle
 
 import (
@@ -26,6 +27,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // bundleFS holds the pinned core binary + base geo files. The `all:` prefix
@@ -34,10 +38,35 @@ import (
 //go:embed all:core
 var bundleFS embed.FS
 
-// geoFiles are the base geo data files shipped as a first-run fallback. Updating
-// them from the dashboard is allowed, so ExtractGeofiles only writes them when
-// missing — it never clobbers a dashboard-updated copy.
-var geoFiles = []string{"geoip.dat", "geosite.dat"}
+// geoFiles are every geo data file that may be embedded and extracted as a
+// first-run fallback: the complete set the panel's routing editor can name.
+//
+// build/core/build.sh fetches all six by default. Under GEO_LEAN=1 it fetches
+// only the base pair, and this list is then simply longer than what is embedded:
+// ReadFile fails for the absent names and ExtractGeofiles skips them, leaving the
+// panel to download a country file the first time a rule needs it
+// (web/service/geofile.go).
+//
+// Updating any of them from the dashboard is allowed, so ExtractGeofiles only
+// writes a file when it is missing: it never clobbers a dashboard-updated copy.
+var geoFiles = []string{
+	"geoip.dat", "geosite.dat",
+	"geoip_IR.dat", "geosite_IR.dat",
+	"geoip_RU.dat", "geosite_RU.dat",
+}
+
+// HasGeofile reports whether this build actually carries the named geo file, so
+// the dashboard can distinguish "shipped with the panel" from "downloaded here"
+// instead of assuming a fixed pair. Under GEO_LEAN=1 the country files are
+// absent and this answers false for them.
+func HasGeofile(name string) bool {
+	f, err := bundleFS.Open("core/" + name)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
+}
 
 // XrayBinaryName is the on-disk core binary name the panel launches. It matches
 // the name xray/process.go builds ("xray-<goos>-<goarch>").
@@ -88,6 +117,7 @@ func ExtractGeofiles(binDir string) ([]string, error) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return nil, err
 	}
+	stamps := geoStamps()
 	var written []string
 	for _, name := range geoFiles {
 		data, err := bundleFS.ReadFile("core/" + name)
@@ -96,14 +126,52 @@ func ExtractGeofiles(binDir string) ([]string, error) {
 		}
 		dest := filepath.Join(binDir, name)
 		if _, err := os.Stat(dest); err == nil {
-			continue // already present — keep the existing (possibly updated) copy
+			continue // already present, keep the existing (possibly updated) copy
 		}
 		if err := writeAtomically(dest, data, 0o644); err != nil {
 			return written, err
 		}
+		// Date the file by its DATA, not by when it was unpacked. The panel's
+		// updater asks upstream `If-Modified-Since: <mtime>`, so a file left
+		// stamped with the install time claims to be newer than every release
+		// published between the build and the install: upstream answers 304, the
+		// dashboard reports success, and the stale copy stays. It cannot recover on
+		// its own, because a 304 from GitHub carries an ETag but no Last-Modified.
+		//
+		// Only files written here are stamped. One already on disk belongs to
+		// whoever put it there, and its mtime is already the truth about it.
+		if when, ok := stamps[name]; ok {
+			if err := os.Chtimes(dest, when, when); err != nil {
+				// Cosmetic on its own: the file is correct, only its date is not.
+				_ = err
+			}
+		}
 		written = append(written, dest)
 	}
 	return written, nil
+}
+
+// geoStamps reads the build-time manifest mapping each embedded geo file to the
+// upstream Last-Modified date of its data. Absent on a build that predates the
+// manifest, in which case extraction simply skips the dating step.
+func geoStamps() map[string]time.Time {
+	raw, err := bundleFS.ReadFile("core/geo.stamp")
+	if err != nil {
+		return nil
+	}
+	stamps := make(map[string]time.Time)
+	for _, line := range strings.Split(string(raw), "\n") {
+		name, epoch, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok || name == "" {
+			continue
+		}
+		secs, err := strconv.ParseInt(strings.TrimSpace(epoch), 10, 64)
+		if err != nil || secs <= 0 {
+			continue
+		}
+		stamps[name] = time.Unix(secs, 0)
+	}
+	return stamps
 }
 
 // writeAtomically writes data to dest via a temp file + rename. The rename swaps

@@ -21,6 +21,11 @@
 #   SUBMODULES_UPDATE=1  force a sync to the RECORDED pin (not the branch tip)
 #   SKIP_SUBMODULES=1  don't touch the submodule (use whatever is checked out)
 #   SKIP_CORE=1        reuse the cached Xray core + geo files
+#   GEO_LEAN=1         embed ONLY geoip.dat + geosite.dat, dropping the ~118MB
+#                      of country files (geo{ip,site}_{IR,RU}.dat) that the
+#                      routing editor's Iran/Russia entries reference. All six
+#                      are embedded by default; with GEO_LEAN the panel
+#                      downloads a country file the first time a rule needs it.
 #
 set -euo pipefail
 

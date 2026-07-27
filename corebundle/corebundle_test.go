@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestExtractXray verifies the embedded core (when built by build/core/build.sh)
@@ -69,5 +70,48 @@ func TestExtractGeofiles(t *testing.T) {
 	got, _ := os.ReadFile(sentinel)
 	if string(got) != "USER-EDITED" {
 		t.Fatal("ExtractGeofiles clobbered an existing geo file on rerun")
+	}
+}
+
+// TestExtractedGeofilesAreDatedByTheirData guards the panel's geo updater.
+//
+// The updater asks upstream `If-Modified-Since: <local mtime>`. A file left
+// stamped with the moment it was unpacked claims to be newer than every upstream
+// release published between the build and the install, so the server answers 304,
+// the dashboard reports success, and the stale copy stays. It cannot self-correct
+// either: a 304 from GitHub carries an ETag but no Last-Modified, so there is
+// nothing to re-stamp from. Dating each extracted file by its DATA is what keeps
+// the update button honest.
+func TestExtractedGeofilesAreDatedByTheirData(t *testing.T) {
+	stamps := geoStamps()
+	if len(stamps) == 0 {
+		t.Skip("no geo.stamp manifest embedded in this build")
+	}
+	dir := t.TempDir()
+	before := time.Now()
+	written, err := ExtractGeofiles(dir)
+	if err != nil {
+		t.Fatalf("ExtractGeofiles: %v", err)
+	}
+	if len(written) == 0 {
+		t.Skip("no geo files embedded in this build")
+	}
+	for _, path := range written {
+		name := filepath.Base(path)
+		want, ok := stamps[name]
+		if !ok {
+			t.Errorf("%s: extracted but absent from geo.stamp, so it will be dated by install time", name)
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", name, err)
+		}
+		if !info.ModTime().Equal(want) {
+			t.Errorf("%s: mtime %v, want the upstream date %v", name, info.ModTime(), want)
+		}
+		if !info.ModTime().Before(before) {
+			t.Errorf("%s: dated at extraction time (%v), not by its data", name, info.ModTime())
+		}
 	}
 }

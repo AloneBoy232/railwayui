@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# build/core/build.sh — Build the pinned Xray core + fetch the base geo files
+# build/core/build.sh — Build the pinned Xray core + fetch the geo data files
 # that get embedded into the panel binary (go:embed) and extracted at runtime by
 # the `corebundle` package.
 #
 # The panel ships a SPECIFIC patched Xray-core fork (Sir-MmD/Xray-core) whose
 # Shadowsocks per-user `method` fallback the product depends on. This script
 # produces that exact core, statically linked (CGO_ENABLED=0) so it runs on any
-# Linux distro, and drops it — plus geoip.dat/geosite.dat — where the go:embed
-# picks them up.
+# Linux distro, and drops it, plus every geo file the routing editor can name,
+# where the go:embed picks them up.
 #
 # Output layout (consumed by corebundle's //go:embed all:core):
 #   corebundle/core/<goarch>/xray
-#   corebundle/core/geoip.dat
-#   corebundle/core/geosite.dat
+#   corebundle/core/geoip.dat   geosite.dat            (base pair)
+#   corebundle/core/geo{ip,site}_{IR,RU}.dat           (unless GEO_LEAN=1)
 #
 # Usage:
 #   build/core/build.sh [goarch...]        # default: amd64
@@ -27,6 +27,9 @@
 #   XRAY_REPO  fork git URL for the fallback clone (default: Sir-MmD/Xray-core)
 #   XRAY_REF   git ref for the fallback clone       (default: default branch)
 #   GEO_ONLY=1 only refresh geo files, skip the core build
+#   GEO_LEAN=1 embed ONLY geoip.dat + geosite.dat, dropping the ~118MB of country
+#              files geo{ip,site}_{IR,RU}.dat. The panel then downloads whichever
+#              one a routing rule needs, the first time it needs it.
 #
 set -euo pipefail
 
@@ -67,12 +70,111 @@ _geo_one() {
     fi
 }
 
+# Every geo data file the panel's routing editor can name, and the complete set
+# `corebundle` embeds. It is exactly the six the Basic Routing lists reference:
+# `geoip:`/`geosite:` shorthands resolve to the Loyalsoldier pair, and the
+# Iran/Russia entries are explicit `ext:geoip_IR.dat:ir` style references
+# (web/html/xray.html settingsData). Keep this list in sync with
+# `builtinGeofiles` in web/service/geofile.go, which is what the panel downloads
+# from at runtime.
+#
+# All six are fetched and embedded by DEFAULT. The four country files add ~118MB
+# (geosite_RU.dat alone is ~74MB) on top of the ~28MB base pair, which is a
+# deliberate trade: the servers this panel runs on are frequently the ones that
+# cannot reach GitHub at runtime, and a geo file the core cannot open is a fatal
+# config parse error that takes every inbound down, not a degraded rule.
+# GEO_LEAN=1 keeps only the base pair for a smaller binary; the panel then
+# downloads a country file the first time a rule needs it (web/service/geofile.go).
+GEO_BASE_FILES=(
+    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat|geoip.dat"
+    "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat|geosite.dat"
+)
+GEO_COUNTRY_FILES=(
+    "https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geoip.dat|geoip_IR.dat"
+    "https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download/geosite.dat|geosite_IR.dat"
+    "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat|geoip_RU.dat"
+    "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat|geosite_RU.dat"
+)
+
+_geo_batch() {
+    local entry url name
+    for entry in "$@"; do
+        url="${entry%%|*}"
+        name="${entry#*|}"
+        _geo_one "$url" "$OUT_ROOT/$name"
+        _geo_stamp "$url" "$OUT_ROOT/$name"
+    done
+}
+
+# Set the local file's mtime to the upstream Last-Modified, rather than leaving it
+# at "whenever curl happened to write it".
+#
+# This is what makes the panel's own updater honest. The panel asks upstream
+# `If-Modified-Since: <local mtime>`, and geo files reach a user pre-extracted from
+# the binary, where the mtime would otherwise be the INSTALL time. Data built in
+# March and installed in June would then look newer than every release in between,
+# so the server answers 304, the panel reports "updated successfully", and the
+# stale data stays. It never self-corrects either: GitHub's 304 carries an ETag but
+# no Last-Modified, so there is nothing for the panel to re-stamp from.
+_geo_stamp() {
+    local url="$1" out="$2" lm
+    [[ -e "$out" ]] || return 0
+    lm="$(curl -fsSIL --retry 2 "$url" 2>/dev/null | grep -i '^last-modified:' | tail -1 | sed 's/^[Ll]ast-[Mm]odified:[[:space:]]*//' | tr -d '\r' || true)"
+    if [[ -z "$lm" ]]; then
+        warn "$(basename "$out"): upstream sent no Last-Modified; leaving mtime as-is"
+        return 0
+    fi
+    if touch -d "$lm" "$out" 2>/dev/null; then
+        ok "$(basename "$out"): dated $lm"
+    else
+        warn "$(basename "$out"): could not parse Last-Modified '$lm'; leaving mtime as-is"
+    fi
+}
+
+# The embed drops file mtimes, so record them beside the data. corebundle reads
+# this back and re-applies each date to the file it extracts, which is the whole
+# point of _geo_stamp above.
+write_geo_manifest() {
+    local f name manifest="$OUT_ROOT/geo.stamp"
+    : > "$manifest"
+    for f in "$OUT_ROOT"/*.dat; do
+        [[ -e "$f" ]] || continue
+        name="$(basename "$f")"
+        printf '%s\t%s\n' "$name" "$(stat -c %Y "$f")" >> "$manifest"
+    done
+    info "geo.stamp: $(wc -l < "$manifest") entries"
+}
+
 fetch_geo() {
-    local base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-    step "Checking base geo files (conditional; GEO_FORCE=1 to force a refresh)"
-    _geo_one "$base/geoip.dat"   "$OUT_ROOT/geoip.dat"
-    _geo_one "$base/geosite.dat" "$OUT_ROOT/geosite.dat"
-    info "geo: $(ls -lh "$OUT_ROOT"/geoip.dat "$OUT_ROOT"/geosite.dat | awk '{print $5, $9}' | tr '\n' ' ')"
+    local entry name stale=()
+    step "Checking geo files (conditional; GEO_FORCE=1 to force a refresh)"
+    _geo_batch "${GEO_BASE_FILES[@]}"
+
+    if [[ "${GEO_LEAN:-0}" == "1" ]]; then
+        # Left behind by an earlier full build. They would still be embedded, so
+        # remove them rather than let GEO_LEAN=1 quietly produce a ~118MB-fat binary.
+        for entry in "${GEO_COUNTRY_FILES[@]}"; do
+            name="${entry#*|}"
+            if [[ -e "$OUT_ROOT/$name" ]]; then
+                rm -f "$OUT_ROOT/$name"
+                stale+=("$name")
+            fi
+        done
+        if (( ${#stale[@]} )); then
+            warn "GEO_LEAN=1: removed country geo files from a previous build: ${stale[*]}"
+        fi
+        info "GEO_LEAN=1: country geo files are NOT embedded; the panel downloads them on demand"
+    else
+        _geo_batch "${GEO_COUNTRY_FILES[@]}"
+    fi
+
+    # `|| true` on both: this script runs under `set -o pipefail`, so if the glob
+    # matches nothing (a first run whose downloads all failed) the ls exits non-zero,
+    # the pipeline inherits it, and the build dies here instead of at the real
+    # failure. Same trap the submodule-status check documents above.
+    write_geo_manifest
+    info "geo: $(du -ch "$OUT_ROOT"/*.dat 2>/dev/null | tail -1 | awk '{print $1}' || true) across $(ls -1 "$OUT_ROOT"/*.dat 2>/dev/null | wc -l || true) file(s)"
+    { ls -lh "$OUT_ROOT"/*.dat 2>/dev/null || true; } | awk '{print "    " $5, $9}'
 }
 
 # --- the pinned core -----------------------------------------------------------

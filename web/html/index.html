@@ -557,10 +557,15 @@
         </a-list>
       </a-collapse-panel>
       <a-collapse-panel key="2" header='Geofiles'>
+        <a-alert type="info" show-icon class="mb-10"
+          message='{{ i18n "pages.index.geofileBundledHint" }}'></a-alert>
         <a-list class="ant-version-list w-100" bordered>
           <a-list-item class="ant-version-list-item"
-            v-for="file, index in ['geosite.dat', 'geoip.dat', 'geosite_IR.dat', 'geoip_IR.dat', 'geosite_RU.dat', 'geoip_RU.dat']">
-            <a-tag :color="index % 2 == 0 ? 'purple' : 'green'">[[ file ]]</a-tag>
+            v-for="file in ['geosite.dat', 'geoip.dat', 'geosite_IR.dat', 'geoip_IR.dat', 'geosite_RU.dat', 'geoip_RU.dat']">
+            <a-tag color="green">[[ file ]]</a-tag>
+            <a-badge v-if="geofileStatusByName[file]"
+              :status="geofileStatusByName[file].installed ? 'success' : 'default'"
+              :text="geofileStateText(file)"></a-badge>
             <a-icon type="reload" @click="updateGeofile(file)" class="mr-8" />
           </a-list-item>
         </a-list>
@@ -612,10 +617,15 @@
     :closable="true" @ok="() => geofilesModal.visible = false" :class="themeSwitcher.currentTheme" footer="">
     <a-collapse default-active-key="2">
       <a-collapse-panel key="2" header='Geofiles'>
+        <a-alert type="info" show-icon class="mb-10"
+          message='{{ i18n "pages.index.geofileBundledHint" }}'></a-alert>
         <a-list class="ant-version-list w-100" bordered>
           <a-list-item class="ant-version-list-item"
-            v-for="file, index in ['geosite.dat', 'geoip.dat', 'geosite_IR.dat', 'geoip_IR.dat', 'geosite_RU.dat', 'geoip_RU.dat']">
-            <a-tag :color="index % 2 == 0 ? 'purple' : 'green'">[[ file ]]</a-tag>
+            v-for="file in ['geosite.dat', 'geoip.dat', 'geosite_IR.dat', 'geoip_IR.dat', 'geosite_RU.dat', 'geoip_RU.dat']">
+            <a-tag color="green">[[ file ]]</a-tag>
+            <a-badge v-if="geofileStatusByName[file]"
+              :status="geofileStatusByName[file].installed ? 'success' : 'default'"
+              :text="geofileStateText(file)"></a-badge>
             <a-icon type="reload" @click="updateGeofile(file)" class="mr-8" />
           </a-list-item>
         </a-list>
@@ -1544,6 +1554,17 @@
       // escaping to whatever context the attribute happened to be classified as.
       donateList: [{{ range .donate }}{ chain: '{{ .Chain }}', addr: '{{ .Address }}' },{{ end }}],
       geofilesModal: { visible: false },
+      // Which geo files are actually on disk. Four of the six the list offers do
+      // not ship with the panel, and until this is fetched the list has no way to
+      // say so: every row looks identical whether the file is there or not.
+      geofileStatus: [],
+      // Emitted as JS rather than into the Vue attribute that consumes them, so
+      // html/template escapes them as JS strings (see donateList above). An
+      // apostrophe in a translation would otherwise end the attribute's string.
+      geofileText: {
+        installed: '{{ i18n "pages.index.geofileInstalled" }}',
+        notInstalled: '{{ i18n "pages.index.geofileNotInstalled" }}',
+      },
       distroModal: { visible: false, pretty: '', tested: '' },
 
       // --- redesign shell + bento tiles ---------------------------------
@@ -1567,6 +1588,15 @@
       userStats: { total: 0, online: 0, depleted: 0, expiring: 0 },
     },
     computed: {
+      // geofileStatus keyed by file name, for the Geofiles list. Empty until the
+      // fetch lands (or if it fails), and the list checks for a row before
+      // rendering one, so an unreachable endpoint shows no badge rather than a
+      // wrong one.
+      geofileStatusByName() {
+        const byName = {};
+        (this.geofileStatus || []).forEach(state => { byName[state.name] = state; });
+        return byName;
+      },
       // Identity tile. A user-set name wins; otherwise the distro name; the
       // hostname is the last resort so the tile is never blank.
       // Hostname, not distro: the distro now has its own line below, and
@@ -2215,6 +2245,20 @@
       openGeofiles() {
         this.geofilesModal.visible = true;
         this.loadCustomGeo();
+        this.fetchGeofileStatus();
+      },
+      async fetchGeofileStatus() {
+        try {
+          const msg = await HttpUtil.get('/panel/api/server/geofileStatus');
+          if (!msg || !msg.success || !msg.obj) return;
+          this.geofileStatus = msg.obj;
+        } catch (e) { /* best-effort: the list still works without the badges */ }
+      },
+      geofileStateText(file) {
+        const state = this.geofileStatusByName[file];
+        if (!state) return '';
+        const size = state.installed && state.size ? ' (' + SizeFormatter.sizeFormat(state.size) + ')' : '';
+        return (state.installed ? this.geofileText.installed : this.geofileText.notInstalled) + size;
       },
       loading(spinning, tip = '{{ i18n "loading"}}') {
         this.loadingStates.spinning = spinning;
@@ -2443,6 +2487,9 @@
               ? `/panel/api/server/updateGeofile/${fileName}`
               : `/panel/api/server/updateGeofile`;
             await HttpUtil.post(url);
+            // A download is the one thing that flips a row from not-installed to
+            // installed, so re-read rather than leaving the badges stale.
+            await this.fetchGeofileStatus();
             this.loading(false);
           },
         });
@@ -2629,6 +2676,12 @@
       this.fetchUserStats();
       this.fetchServerName();
       this.fetchPanelLocation();
+      // Up front, not only in openGeofiles(), so the badges are already there when
+      // the list first paints rather than appearing a round-trip later. A row whose
+      // badge has not arrived yet is indistinguishable from one the endpoint could
+      // not answer for, which is the one thing this list exists to tell apart.
+      // openGeofiles() still refreshes on open.
+      this.fetchGeofileStatus();
       this.checkForUpdate(false); // best-effort update check on every overview load
       this.announceUpdateResult(); // "Updated to vX" if this load follows a self-update
 

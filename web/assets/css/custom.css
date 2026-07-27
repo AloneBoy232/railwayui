@@ -1870,6 +1870,14 @@ li.ant-calendar-time-picker-select-option-selected {
   color:var(--dark-color-text-primary);
 }
 
+/* Badge text inside a modal. antd portals modals out to a sibling of the page
+   root, so the descendant rule above reaches badges on the page and misses every
+   badge in a dialog, which then keeps antd's near-black default on a dark
+   surface. Same reason the list rules here are written with `~div`. */
+.index-page.dark~div .ant-badge-status-text {
+  color:var(--dark-color-text-primary);
+}
+
 .index-page.dark .ant-card-actions>li {
   color:rgb(255 255 255 / .55);
 }

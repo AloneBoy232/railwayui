@@ -72,6 +72,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/getNewmlkem768", a.getNewmlkem768)
 	g.GET("/getNewVlessEnc", a.getNewVlessEnc)
 	g.GET("/distroStatus", a.distroStatus)
+	g.GET("/geofileStatus", a.geofileStatus)
 	g.GET("/checkUpdate", a.checkUpdate)
 	g.GET("/updateProgress", a.updateProgress)
 	// Reports (once) that the panel came back from a self-update. Super-admin only
@@ -373,6 +374,14 @@ func (a *ServerController) installXray(c *gin.Context) {
 	version := c.Param("version")
 	err := a.serverService.UpdateXray(version)
 	jsonMsg(c, I18nWeb(c, "pages.index.xraySwitchVersionPopover"), err)
+}
+
+// geofileStatus reports which geo files are actually installed under bin/. Only
+// two of the six the panel offers ship with the binary; the rest exist after a
+// download and not before, and a routing rule that names one that is not there
+// stops the core from starting at all.
+func (a *ServerController) geofileStatus(c *gin.Context) {
+	jsonObj(c, a.serverService.GetGeofileStatus(), nil)
 }
 
 // updateGeofile updates the specified geo file for Xray.

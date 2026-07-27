@@ -600,6 +600,38 @@ func (s *XrayService) RestartXray(isForce bool) error {
 		return err
 	}
 
+	// Top up the geo data files the config names before handing it over. Saving a
+	// routing rule already fetches them (SaveXraySetting), but a config can arrive
+	// by other roads that never passed through that check: a restored backup, an
+	// imported 3x-ui database, a bin/ folder wiped between runs. The core
+	// treats a geo file it cannot open as a fatal parse error, not a bad rule. The
+	// process then never comes up at all, taking every inbound with it.
+	//
+	// Routing is not the only section the core runs through its geo parsers:
+	// per-inbound sniffing (domainsExcluded/ipsExcluded, infra/conf
+	// SniffingConfig.Build) and freedom outbounds (ipsBlocked, infra/conf
+	// freedom.go) use the very same ParseDomainRules/ParseIPRules. Sniffing is also
+	// the reason this sits here rather than only on the save path: the inbound form
+	// offers `ext:*` for both fields and stores them per inbound, so the template
+	// SaveXraySetting sees never contains them.
+	//
+	// Inbound settings are deliberately not scanned: they hold the client lists,
+	// which are the bulk of a large config and cannot carry a geo reference.
+	sections := []([]byte){xrayConfig.RouterConfig, xrayConfig.DNSConfig, xrayConfig.OutboundConfigs}
+	for _, in := range xrayConfig.InboundConfigs {
+		if len(in.Sniffing) > 0 {
+			sections = append(sections, in.Sniffing)
+		}
+	}
+	if refs := ExtGeoRefs(sections...); len(refs) > 0 {
+		if _, missing := EnsureGeofilesAuto(refs); len(missing) > 0 {
+			// Nothing left to do about it here: starting anyway produces the real
+			// error from the core, which names the file and is what the user sees.
+			logger.Warning("xray config references geo files that are missing and could not be downloaded:",
+				strings.Join(missing, ", "))
+		}
+	}
+
 	if s.IsXrayRunning() {
 		if !isForce && p.GetConfig().Equals(xrayConfig) && !isNeedXrayRestart.Load() {
 			logger.Debug("It does not need to restart Xray")
