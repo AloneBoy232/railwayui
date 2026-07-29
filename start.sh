@@ -1,23 +1,58 @@
-#!/bin/bash
-set -e
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+events { worker_connections 1024; }
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    sendfile on;
+    keepalive_timeout 65;
+    
+    server {
+        listen ${PORT};
+        server_name _;
 
-RAILWAY_PORT=${PORT:-8080}
-PANEL_PORT=2053
+        # 1. مسیرهای اختصاصی Xray (ترافیک VPN)
+        # پورت داخلی Xray را روی 1080 تنظیم می‌کنیم تا با پورت عمومی 8080 تداخل نداشته باشد
+        location /vless-ws {
+            proxy_pass http://127.0.0.1:1080;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "Upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
 
-echo "🚀 Starting Railway-Optimized 3x-ui..."
-echo "📌 Public Port: $RAILWAY_PORT"
+        location /grpc-service {
+            grpc_pass grpc://127.0.0.1:1080;
+            grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
 
-# 🔥 تنظیم Base Path برای جلوگیری از مشکل صفحه سفید
-export WEB_BASE_PATH=/managepanel/
-export XUI_PORT=$PANEL_PORT
-export XUI_DB_PATH=/etc/x-ui/x-ui.db
+        # 2. ریدایرکت ریشه دامنه به پنل
+        location = / {
+            return 302 /managepanel/;
+        }
 
-# جایگذاری پورت در کانفیگ Nginx
-sed -e "s/\${PORT}/${RAILWAY_PORT}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-
-echo "🖥️ Starting 3x-ui panel on internal port $PANEL_PORT..."
-cd /app/x-ui
-/app/x-ui/x-ui &
-
-echo "🌐 Starting Nginx on public port $RAILWAY_PORT..."
-exec nginx -g "daemon off;"
+        # 3. هندل کردن پنل مدیریت و تمام API های آن (مثل /login)
+        location / {
+            # اگر درخواست از /managepanel/ آمد، اسلش اول را حذف کن
+            rewrite ^/managepanel/(.*)$ /$1 break;
+            
+            proxy_pass http://127.0.0.1:2053;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # بازنویسی لینک‌های HTML/JS برای Sub-path
+            sub_filter 'href="/' 'href="/managepanel/';
+            sub_filter 'src="/' 'src="/managepanel/';
+            sub_filter 'action="/' 'action="/managepanel/';
+            sub_filter_once off;
+            sub_filter_types text/html application/javascript text/css;
+        }
+    }
+}
