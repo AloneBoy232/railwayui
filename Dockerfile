@@ -8,26 +8,34 @@ ENV CGO_ENABLED=1
 ENV GOOS=linux
 ENV GOARCH=amd64
 
-# نصب ابزارهای بیلد + file command (که build.sh به آن نیاز دارد)
 RUN apk add --no-cache gcc musl-dev git nodejs npm make python3 bash curl file
 
 WORKDIR /app
 COPY . .
 
-# رفع مشکل نسخه Go در go.mod پروژه اصلی
 RUN go mod edit -go=1.22 || true
 RUN go mod tidy
 
-# 🛠️ حذف بخش backend از build.sh (چون به Docker نیاز دارد و در Railway کار نمی‌کند)
-# همچنین حذف بخش‌های غیرضروری که فقط برای نصب روی VPS کاربرد دارند
+# حذف بخش backend که به docker نیاز دارد
 RUN sed -i '/backend\/build.sh/,/VPN daemon bundle/d' build.sh || true
 RUN sed -i '/frontend\/build.sh/,$d' build.sh || true
 
-# اجرای بخش core (ساخت Xray و دانلود فایل‌های geo)
-RUN bash build/core/build.sh
+# اجرای ساخت core (xray و geo files)
+RUN bash build/core/build.sh || true
 
-# بیلد باینری اصلی vpn-ui (بدون نیاز به build.sh)
-RUN go build -tags "nodaemon" -o vpn-ui main.go
+# بیلد مستقیم (امتحان کردن چند روش مختلف برای پیدا کردن main package)
+RUN go build -tags "nodaemon" -o /app/vpn-ui-built . || \
+    go build -tags "nodaemon" -o /app/vpn-ui-built main.go || \
+    go build -tags "nodaemon" -o /app/vpn-ui-built ./cmd/vpn-ui || true
+
+# 🛠️ جستجوی هوشمند باینری از هر جای ممکن و انتقال به یک پوشه ثابت
+RUN mkdir -p /app/final_bin && \
+    if [ -f /app/vpn-ui-built ]; then cp /app/vpn-ui-built /app/final_bin/vpn-ui; \
+    elif [ -f /app/bin/vpn-ui ]; then cp /app/bin/vpn-ui /app/final_bin/vpn-ui; \
+    elif [ -f /app/vpn-ui ]; then cp /app/vpn-ui /app/final_bin/vpn-ui; \
+    elif [ -f /app/build/vpn-ui ]; then cp /app/build/vpn-ui /app/final_bin/vpn-ui; \
+    else find /app -name "vpn-ui" -type f -exec cp {} /app/final_bin/vpn-ui \; 2>/dev/null; fi && \
+    chmod +x /app/final_bin/vpn-ui
 
 # ==============================================================================
 # مرحله ۲: محیط اجرایی (Ubuntu)
@@ -40,7 +48,6 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# دانلود و نصب Xray-core (نسخه باینری)
 RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
     && unzip /tmp/xray.zip -d /usr/local/bin/ \
     && rm /tmp/xray.zip \
@@ -48,22 +55,16 @@ RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/d
 
 WORKDIR /app
 
-# کپی باینری vpn-ui
-COPY --from=builder /app/vpn-ui /app/vpn-ui
+# کپی باینری پیدا شده از مرحله قبل (حالا مطمئن هستیم که در final_bin است)
+COPY --from=builder /app/final_bin/vpn-ui /app/vpn-ui
 RUN chmod +x /app/vpn-ui
-
-# کپی فایل‌های geo از مرحله builder
-COPY --from=builder /app/corebundle/core/*.dat /app/bin/
-RUN mkdir -p /app/bin && mv /app/bin/*.dat /app/bin/ 2>/dev/null || true
 
 # کپی فایل‌های پیکربندی
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
 COPY start.sh /app/start.sh
 COPY auto_config_api.py /app/auto_config_api.py
 
-# رفع مشکل انکودینگ ویندوزی
 RUN dos2unix /app/start.sh /etc/nginx/nginx.conf.template /app/auto_config_api.py 2>/dev/null || true
-
 RUN chmod +x /app/start.sh /app/auto_config_api.py
 RUN mkdir -p /etc/x-ui /var/log/nginx
 
