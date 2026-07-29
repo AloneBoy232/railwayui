@@ -1,61 +1,53 @@
 # ==============================================================================
-# محیط واحد: بیلد و اجرا در یک ایمیج (حذف مشکل کپی نشدن باینری)
+# Railway-optimized multi-stage build for vpn-ui
 # ==============================================================================
+FROM golang:1.26.5-bookworm AS deps
+WORKDIR /build
+ENV CGO_ENABLED=1
+COPY go.mod go.sum ./
+RUN go mod download
+
+FROM deps AS builder
+WORKDIR /build
+COPY . .
+RUN git submodule update --init --recursive
+RUN mkdir -p /app \
+    && (go build -tags "nodaemon" -ldflags="-s -w" -o /app/vpn-ui . || \
+        go build -tags "nodaemon" -ldflags="-s -w" -o /app/vpn-ui main.go || \
+        go build -tags "nodaemon" -ldflags="-s -w" -o /app/vpn-ui ./cmd/vpn-ui)
+RUN /app/vpn-ui -v || true
+
+# Final image
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
-
-# ۱. نصب ابزارهای سیستمی مورد نیاز
 RUN apt-get update && apt-get install -y \
     nginx sqlite3 jq curl ca-certificates unzip dos2unix \
-    python3 python3-pip git wget build-essential \
+    python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# ۲. نصب Go 1.23 (آخرین نسخه پایدار برای بیلد پروژه)
-RUN wget -q https://go.dev/dl/go1.23.5.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.23.5.linux-amd64.tar.gz \
-    && rm go1.23.5.linux-amd64.tar.gz
-ENV PATH=$PATH:/usr/local/go/bin
-ENV GOTOOLCHAIN=auto
-ENV CGO_ENABLED=1
+# Xray-core (pre-downloaded for faster startup)
+RUN curl -fsSL -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
+    && unzip -q /tmp/xray.zip -d /tmp/xray \
+    && mv /tmp/xray/xray /usr/local/bin/xray-linux-amd64 \
+    && ln -sf /usr/local/bin/xray-linux-amd64 /usr/local/bin/xray \
+    && rm -rf /tmp/xray /tmp/xray.zip \
+    && chmod +x /usr/local/bin/xray-linux-amd64 \
+    && xray-linux-amd64 -version || true
 
-# ۳. نصب Node.js (در صورت نیاز پروژه برای بیلد فرانت‌اند)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs
-
-# ۴. دانلود و نصب Xray-core (باینری رسمی)
-RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
-    && unzip /tmp/xray.zip -d /usr/local/bin/ \
-    && rm /tmp/xray.zip \
-    && chmod +x /usr/local/bin/xray
-
-# ۵. کپی کدهای پروژه و بیلد مستقیم در همان محیط نهایی
 WORKDIR /app
-COPY . /app
+COPY --from=builder /app/vpn-ui /app/vpn-ui
 
-# ۶. اصلاح go.mod و بیلد باینری دقیقاً در مسیر نهایی
-RUN go mod edit -go=1.22 || true \
-    && go mod tidy \
-    && (go build -tags "nodaemon" -o /app/vpn-ui . || \
-        go build -tags "nodaemon" -o /app/vpn-ui main.go || \
-        go build -tags "nodaemon" -o /app/vpn-ui ./cmd/vpn-ui)
-
-# ۷. چک امنیتی: اگر باینری ساخته نشد، با خطای واضح متوقف شو
-RUN if [ ! -f /app/vpn-ui ]; then \
-        echo "❌ ERROR: vpn-ui binary was not built!" && \
-        ls -la /app/ && \
-        exit 1; \
-    fi \
-    && chmod +x /app/vpn-ui
-
-# ۸. کپی فایل‌های پیکربندی
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
 COPY start.sh /app/start.sh
 COPY auto_config_api.py /app/auto_config_api.py
 
-# ۹. رفع مشکل انکودینگ ویندوزی
-RUN dos2unix /app/start.sh /etc/nginx/nginx.conf.template /app/auto_config_api.py 2>/dev/null || true
-RUN chmod +x /app/start.sh /app/auto_config_api.py
-RUN mkdir -p /etc/x-ui /var/log/nginx
+RUN dos2unix /app/start.sh /etc/nginx/nginx.conf.template /app/auto_config_api.py 2>/dev/null || true \
+    && chmod +x /app/start.sh /app/auto_config_api.py /app/vpn-ui \
+    && mkdir -p /etc/x-ui /var/log/nginx /app/bin
 
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+
+STOPSIGNAL SIGTERM
 CMD ["/app/start.sh"]

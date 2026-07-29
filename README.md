@@ -6,7 +6,10 @@
 - `Dockerfile`: بیلد و اجرای چندمرحله‌ای (Golang + Ubuntu + Xray + Nginx)
 - `nginx.conf.template`: قالب پیکربندی Nginx برای مسیریابی هوشمند ترافیک
 - `start.sh`: اسکریپت ورودی (Entrypoint) برای راه‌اندازی هماهنگ سرویس‌ها
-- `railway_auto_config.go`: نمونه کد بک‌اند برای ساخت خودکار اینباند بهینه
+- `RailwayAutoConfig.vue`: نمونه کامپوننت Vue برای ساخت خودکار کانفیگ Railway
+- `auto_config_api.py`: سرویس پایتون تولید کانفیگ
+- `web/railway_api.go`: اندپوینت بکند `/api/railway-auto` در Go
+- `web/assets/railway-auto-inject.js`: کد جاوااسکریپتی که دکمه را به UI تزریق می‌کند
 - `RailwayAutoConfig.vue`: نمونه کامپوننت فرانت‌اند برای دکمه ساخت خودکار کانفیگ
 
 ## 🛠️ نحوه استفاده:

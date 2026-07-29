@@ -1,18 +1,28 @@
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /var/run/nginx.pid;
-events { worker_connections 1024; }
+
+events {
+    worker_connections 1024;
+}
+
 http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
     sendfile on;
     keepalive_timeout 65;
-    
+    client_max_body_size 50M;
+
     server {
         listen ${PORT};
         server_name _;
 
-        # مسیرهای Xray
+        # Timeouts tuned for Railway's proxy behavior
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+
+        # Xray WebSocket path
         location /vless-ws {
             proxy_pass http://127.0.0.1:1080;
             proxy_http_version 1.1;
@@ -27,18 +37,27 @@ http {
             grpc_set_header Host $host;
         }
 
-        # مسیر API تولید کانفیگ اتوماتیک
+        # Auto-config API
         location /api/railway-auto {
             proxy_pass http://127.0.0.1:2054;
             proxy_set_header Host $host;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 10s;
         }
 
-        # ریدایرکت ریشه
-        location = / {
-            return 302 /managepanel/;
+        # Health checks (proxied through nginx so Railway can reach them on $PORT)
+        location /healthz {
+            proxy_pass http://127.0.0.1:2053/healthz;
+            proxy_set_header Host $host;
+            access_log off;
+        }
+        location /readyz {
+            proxy_pass http://127.0.0.1:2053/readyz;
+            proxy_set_header Host $host;
+            access_log off;
         }
 
-        # هندل کردن پنل مدیریت
+        # Panel
         location / {
             rewrite ^/managepanel/(.*)$ /$1 break;
             proxy_pass http://127.0.0.1:2053;
@@ -46,13 +65,12 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            
-            sub_filter 'href="/' 'href="/managepanel/';
-            sub_filter 'src="/' 'src="/managepanel/';
-            sub_filter 'action="/' 'action="/managepanel/';
+
+            sub_filter 'href=\"/' 'href=\"/managepanel/';
+            sub_filter 'src=\"/' 'src=\"/managepanel/'";
+            sub_filter 'action=\"/' 'action=\"/managepanel/'";
             sub_filter_once off;
-            # 🔥 حذف text/html برای رفع هشدار duplicate MIME type
-            sub_filter_types application/javascript text/css;
+            sub_filter_types text/html application/javascript text/css;
         }
     }
 }
