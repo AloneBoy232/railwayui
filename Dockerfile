@@ -10,7 +10,7 @@ RUN go mod download
 FROM deps AS builder
 WORKDIR /build
 COPY . .
-RUN git submodule update --init --recursive
+RUN if [ -d .git ]; then git submodule update --init --recursive; fi
 RUN mkdir -p /app \
     && (go build -tags "nodaemon" -ldflags="-s -w" -o /app/vpn-ui . || \
         go build -tags "nodaemon" -ldflags="-s -w" -o /app/vpn-ui main.go || \
