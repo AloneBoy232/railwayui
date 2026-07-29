@@ -1,32 +1,39 @@
-# مرحله ۱: محیط بیلد (Golang + ابزارهای فرانت‌اند)
-FROM golang:1.23-alpine AS builder
+# مرحله ۱: محیط بیلد
+FROM golang:1.22-alpine AS builder
 RUN apk add --no-cache gcc musl-dev git nodejs npm make python3
+
+# فعال کردن قابلیت دانلود خودکار Toolchain برای ماژول‌های سازگار
+ENV GOTOOLCHAIN=auto
 
 WORKDIR /app
 COPY . .
 
-# 🛠️ مرحله ۱: اصلاح نسخه Go در go.mod خود پروژه (رفع تایپوی نویسنده اصلی)
+# 🛠️ اصلاح نسخه Go در فایل اصلی پروژه (رفع تایپوی 1.26.2)
 RUN go mod edit -go=1.22
 
-# 🛠️ مرحله ۲: جایگزینی نسخه خراب و غیرممکن xray-core (v1.260327.0) با نسخه پایدار و واقعی v1.8.24
+# 🛠️ جایگزینی وابستگی‌های خراب با نسخه‌های پایدار واقعی:
+# 1. Xray-core (نسخه v1.26... وجود ندارد -> استفاده از v1.8.24)
 RUN go mod edit -replace github.com/xtls/xray-core=github.com/xtls/xray-core@v1.8.24
 
-# 🛠️ مرحله ۳: مرتب‌سازی وابستگی‌ها بر اساس جایگزینی جدید
+# 2. Telego (نسخه v1.8.0 نیاز به Go 1.25.7 دارد -> استفاده از v1.3.0 پایدار)
+RUN go mod edit -replace github.com/mymmrac/telego=github.com/mymmrac/telego@v1.3.0
+
+# مرتب‌سازی وابستگی‌ها
 RUN go mod tidy
 
-# 🛠️ مرحله ۴: بیلد نهایی باینری
+# بیلد نهایی باینری
 RUN go build -tags "nodaemon" -o vpn-ui main.go
 
 # ==============================================================================
-# مرحله ۲: محیط اجرایی سبک و بهینه برای Railway
+# مرحله ۲: محیط اجرایی بهینه برای Railway
 # ==============================================================================
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب وابستگی‌های ضروری سیستم‌عامل
+# نصب وابستگی‌های سیستمی
 RUN apt-get update && apt-get install -y nginx sqlite3 jq curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# دانلود و نصب آخرین نسخه باینری Xray-core (جدا از کد Go)
+# دانلود و نصب Xray-core (نسخه باینری رسمی)
 RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
     && unzip /tmp/xray.zip -d /usr/local/bin/ \
     && rm /tmp/xray.zip \
@@ -34,18 +41,14 @@ RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/d
 
 WORKDIR /app
 
-# کپی باینری کامپایل‌شده از مرحله بیلد
+# کپی فایل‌ها
 COPY --from=builder /app/vpn-ui /app/vpn-ui
-
-# کپی فایل‌های پیکربندی Nginx و استارت‌آپ
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
 COPY start.sh /app/start.sh
 
-# تنظیم مجوزهای اجرا و ساخت پوشه‌های لازم
+# تنظیمات نهایی
 RUN chmod +x /app/start.sh /app/vpn-ui
 RUN mkdir -p /etc/x-ui /var/log/nginx
 
 EXPOSE 8080
-
-# اجرای اسکریپت ورودی (Entrypoint)
 CMD ["/app/start.sh"]
