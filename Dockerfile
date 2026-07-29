@@ -9,8 +9,8 @@ ENV CGO_ENABLED=1
 ENV GOOS=linux
 ENV GOARCH=amd64
 
-# نصب ابزارهای بیلد (Alpine از apk استفاده می‌کند)
-RUN apk add --no-cache gcc musl-dev git nodejs npm make python3
+# نصب ابزارهای بیلد + bash برای اجرای صحیح build.sh
+RUN apk add --no-cache gcc musl-dev git nodejs npm make python3 bash
 
 WORKDIR /app
 COPY . .
@@ -18,13 +18,13 @@ COPY . .
 # رفع مشکل نسخه Go در go.mod پروژه اصلی
 RUN go mod edit -go=1.22 || true
 
-# مرتب‌سازی وابستگی‌ها (با GOTOOLCHAIN=auto مشکلی پیش نمی‌آید)
+# مرتب‌سازی وابستگی‌ها
 RUN go mod tidy
 
 # بیلد باینری vpn-ui
-# ابتدا چک می‌کنیم آیا اسکریپت build.sh وجود دارد، اگر نه مستقیم main.go را بیلد می‌کنیم
+# استفاده از bash به صورت صریح برای اجرای اسکریپت
 RUN if [ -f build.sh ]; then \
-        chmod +x build.sh && ./build.sh; \
+        chmod +x build.sh && bash build.sh; \
     else \
         go build -tags "nodaemon" -o vpn-ui main.go; \
     fi
@@ -35,7 +35,7 @@ RUN if [ -f build.sh ]; then \
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب ابزارهای مورد نیاز (Ubuntu از apt-get استفاده می‌کند)
+# نصب ابزارهای مورد نیاز
 RUN apt-get update && apt-get install -y \
     nginx sqlite3 jq curl ca-certificates unzip dos2unix \
     python3 python3-pip \
@@ -49,7 +49,8 @@ RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/d
 
 WORKDIR /app
 
-# کپی باینری vpn-ui از مرحله builder (هر دو مسیر احتمالی را چک می‌کنیم)
+# کپی باینری vpn-ui از مرحله builder
+# چک کردن هر دو مسیر احتمالی خروجی build.sh
 COPY --from=builder /app/vpn-ui /app/vpn-ui
 RUN if [ ! -f /app/vpn-ui ] && [ -f /app/bin/vpn-ui ]; then \
         cp /app/bin/vpn-ui /app/vpn-ui; \
