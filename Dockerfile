@@ -28,10 +28,11 @@ RUN apt-get update && apt-get install -y \
 # Xray-core (pre-downloaded for faster startup)
 RUN curl -fsSL -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
     && unzip -q /tmp/xray.zip -d /tmp/xray \
-    && mv /tmp/xray/xray /usr/local/bin/xray-linux-amd64 \
-    && ln -sf /usr/local/bin/xray-linux-amd64 /usr/local/bin/xray \
+    && mkdir -p /app/bin \
+    && mv /tmp/xray/xray /app/bin/xray-linux-amd64 \
+    && ln -sf /app/bin/xray-linux-amd64 /app/bin/xray \
     && rm -rf /tmp/xray /tmp/xray.zip \
-    && chmod +x /usr/local/bin/xray-linux-amd64 \
+    && chmod +x /app/bin/xray-linux-amd64 \
     && xray-linux-amd64 -version || true
 
 WORKDIR /app

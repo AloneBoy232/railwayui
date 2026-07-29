@@ -2,7 +2,7 @@
 set -euo pipefail
 
 RAILWAY_PORT="${PORT:-8080}"
-PANEL_PORT=2053
+PANEL_PORT=2083
 AUTO_CONFIG_PORT=2054
 
 echo "🚀 Starting Railway-Optimized vpn-ui..."
