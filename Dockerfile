@@ -1,51 +1,30 @@
-# مرحله ۱: محیط بیلد (Golang + ابزارهای فرانت‌اند)
-FROM golang:1.23-alpine AS builder
-RUN apk add --no-cache gcc musl-dev git nodejs npm make python3
-
-# فعال کردن قابلیت دانلود خودکار Toolchain برای ماژول‌های سازگار با نسخه‌های جدیدتر Go
-ENV GOTOOLCHAIN=auto
-
-WORKDIR /app
-COPY . .
-
-# 🛠️ اصلاح نسخه Go در فایل اصلی پروژه (رفع تایپوی 1.26.2)
-RUN go mod edit -go=1.22
-
-# 🛠️ جایگزینی وابستگی‌های خراب با نسخه‌های پایدار واقعی:
-RUN go mod edit -replace github.com/xtls/xray-core=github.com/xtls/xray-core@v1.8.24
-RUN go mod edit -replace github.com/mymmrac/telego=github.com/mymmrac/telego@v1.3.0
-
-# مرتب‌سازی وابستگی‌ها
-RUN go mod tidy
-
-# بیلد نهایی باینری
-RUN go build -tags "nodaemon" -o vpn-ui main.go
-
-# ==============================================================================
-# مرحله ۲: محیط اجرایی بهینه برای Railway
-# ==============================================================================
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب وابستگی‌های سیستمی (unzip اضافه شد تا فایل زیپ Xray را باز کند)
+# نصب وابستگی‌های سیستمی
 RUN apt-get update && apt-get install -y nginx sqlite3 jq curl ca-certificates unzip && rm -rf /var/lib/apt/lists/*
 
-# دانلود، استخراج و نصب Xray-core
+WORKDIR /app
+
+# دانلود باینری آماده 3x-ui (حذف کامل نیاز به کامپایل Go و خطاهای ماژول)
+RUN curl -L -o /tmp/x-ui.tar.gz https://github.com/mhsanaei/3x-ui/releases/latest/download/x-ui-linux-amd64.tar.gz \
+    && tar -xzf /tmp/x-ui.tar.gz -C /app \
+    && rm /tmp/x-ui.tar.gz \
+    && mv /app/x-ui/x-ui /app/x-ui-bin \
+    && rm -rf /app/x-ui \
+    && chmod +x /app/x-ui-bin
+
+# دانلود و نصب Xray-core (نسخه باینری رسمی)
 RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
     && unzip /tmp/xray.zip -d /usr/local/bin/ \
     && rm /tmp/xray.zip \
     && chmod +x /usr/local/bin/xray
 
-WORKDIR /app
-
-# کپی فایل‌ها از مرحله بیلد
-COPY --from=builder /app/vpn-ui /app/vpn-ui
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
 COPY start.sh /app/start.sh
 
-# تنظیمات نهایی و دسترسی‌ها
-RUN chmod +x /app/start.sh /app/vpn-ui
-RUN mkdir -p /etc/x-ui /var/log/nginx
+RUN chmod +x /app/start.sh
+RUN mkdir -p /etc/x-ui /var/log/nginx /app/bin
 
 EXPOSE 8080
 CMD ["/app/start.sh"]
