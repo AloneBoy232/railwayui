@@ -44,8 +44,8 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	// Resellers is a permission and not requireSuperAdmin(), so a delegated admin can
 	// run their own resellers. The escalation that opens (assigning someone else's
 	// inbound to a reseller you then log in as) is closed in the service.
-	g.GET("/panel/resellers", requirePerm(model.PermManageResellers), a.resellers)
-	g.GET("/panel/railway-auto", a.railwayAuto)
+	g.GET("/resellers", requirePerm(model.PermManageResellers), a.resellers)
+	g.GET("/railway-auto", a.railwayAuto)
 
 	a.settingController = NewSettingController(g)
 	a.xraySettingController = NewXraySettingController(g)
