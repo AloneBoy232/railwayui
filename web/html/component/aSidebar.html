@@ -98,6 +98,13 @@
                         title: '{{ i18n "menu.resellers"}}'
                     },
                     {{ end }}
+                    {{ if .perms.accessXraySettings }}
+                    {
+                        key: '{{ .base_path }}panel/railway-auto',
+                        icon: 'rocket',
+                        title: '{{ i18n "menu.railwayAuto"}}'
+                    },
+                    {{ end }}
                     {
                         key: '{{ .base_path }}logout/',
                         icon: 'logout',
