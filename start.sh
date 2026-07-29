@@ -10,15 +10,23 @@ echo "📌 Public Port: $RAILWAY_PORT"
 # جایگذاری پورت در کانفیگ Nginx
 sed -e "s/\${PORT}/${RAILWAY_PORT}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
-# اجرای سرویس API تولید کانفیگ اتوماتیک در پس‌زمینه
+# اجرای سرویس API تولید کانفیگ اتوماتیک
 echo "🤖 Starting Auto Config API on port 2054..."
 python3 /app/auto_config_api.py &
 
-# تنظیم متغیرهای محیطی پنل
 export XUI_PORT=$PANEL_PORT
 export XUI_DB_PATH=/etc/x-ui/x-ui.db
 
 echo "🖥️ Starting vpn-ui panel on internal port $PANEL_PORT..."
+
+# 🔥 چک امنیتی: اگر فایل وجود نداشت، محتویات پوشه را چاپ کن تا بفهمیم کجاست
+if [ ! -f /app/vpn-ui ]; then
+    echo "❌ ERROR: /app/vpn-ui not found! Listing /app/ contents:"
+    ls -la /app/
+    exit 1
+fi
+
+chmod +x /app/vpn-ui
 /app/vpn-ui &
 
 echo "🌐 Starting Nginx on public port $RAILWAY_PORT..."
