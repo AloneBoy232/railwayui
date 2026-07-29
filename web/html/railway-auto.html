@@ -3,13 +3,13 @@
 
 {{ template "page/body_start" .}}
 {{template "page/shell_start" . }}
-<a-spin :spinning="loadingStates.spinning" :delay="200" tip='{{ i18n "loading"}}' size="large">
+<a-spin :spinning="loadingStates.spinning" :delay="200" tip='[[ i18n "loading"]]' size="large">
   <transition name="list" appear>
     <a-alert type="error" v-if="showAlert && loadingStates.fetched" class="mb-10"
-      message='{{ i18n "secAlertTitle" }}' color="red" show-icon closable>
+      message='[[ i18n "secAlertTitle" ]]' color="red" show-icon closable>
       <template slot="description">
-        <div>{{ i18n "secAlertSsl" }}</div>
-        <a-button class="sec-alert-dismiss" size="small" @click="dismissSecAlert">{{ i18n "secAlertDismiss" }}</a-button>
+        <div>[[ i18n "secAlertSsl" ]]</div>
+        <a-button class="sec-alert-dismiss" size="small" @click="dismissSecAlert">[[ i18n "secAlertDismiss" ]]</a-button>
       </template>
     </a-alert>
   </transition>
@@ -17,16 +17,16 @@
   <div class="bo-tile" style="padding: 24px;">
     <a-row :gutter="[16, 16]">
       <a-col :xs="24" :sm="24" :md="24" :lg="24">
-        <h2 style="margin-top: 0;">🚀 {{ i18n "pages.railwayAuto.title" }}</h2>
+        <h2 style="margin-top: 0;">🚀 [[ i18n "pages.railwayAuto.title" ]]</h2>
         <p style="color: var(--dark-color-text-secondary, #7a8ba7); margin-top: -8px;">
-          {{ i18n "pages.railwayAuto.subtitle" }}
+          [[ i18n "pages.railwayAuto.subtitle" ]]
         </p>
       </a-col>
     </a-row>
 
     <a-row :gutter="[16, 16]" style="margin-top: 16px;">
       <a-col :xs="24" :sm="24" :md="12" :lg="12">
-        <a-card title="{{ i18n 'pages.railwayAuto.protocol' }}" :bordered="true">
+        <a-card title="[[ i18n 'pages.railwayAuto.protocol' ]]" :bordered="true">
           <a-radio-group v-model="protocol" size="large" style="width: 100%;">
             <a-radio value="vless-ws" style="display: block; margin-bottom: 10px; height: auto;">
               <strong>VLESS + WebSocket</strong>
@@ -45,7 +45,7 @@
       </a-col>
 
       <a-col :xs="24" :sm="24" :md="12" :lg="12">
-        <a-card title="{{ i18n 'pages.railwayAuto.domain' }}" :bordered="true">
+        <a-card title="[[ i18n 'pages.railwayAuto.domain' ]]" :bordered="true">
           <a-input size="large" :value="domain" @change="onDomainChange" placeholder="your-domain.up.railway.app" />
           <div style="margin-top: 10px; font-size: 12px; color: #7a8ba7;">
             Domain is taken from the current browser address when available.
@@ -57,7 +57,7 @@
     <a-row style="margin-top: 16px;">
       <a-col :span="24">
         <a-button type="primary" icon="rocket" size="large" :loading="loading" @click="generate">
-          {{ i18n 'pages.railwayAuto.generate' }}
+          [[ i18n 'pages.railwayAuto.generate' ]]
         </a-button>
       </a-col>
     </a-row>
@@ -70,19 +70,19 @@
 
     <a-row v-if="result" style="margin-top: 16px;">
       <a-col :span="24">
-        <a-alert type="success" message="{{ i18n 'pages.railwayAuto.success' }}" show-icon>
+        <a-alert type="success" message="[[ i18n 'pages.railwayAuto.success' ]]" show-icon>
           <template slot="description">
             <div style="margin-top: 8px;">
-              <div><strong>UUID:</strong> {{ result.uuid }}</div>
-              <div><strong>Path:</strong> {{ result.path }}</div>
-              <div><strong>Protocol:</strong> {{ result.protocol }}</div>
+              <div><strong>UUID:</strong> [[ result.uuid ]]</div>
+              <div><strong>Path:</strong> [[ result.path ]]</div>
+              <div><strong>Protocol:</strong> [[ result.protocol ]]</div>
               <div style="margin-top: 10px;">
                 <a-button size="small" @click="copyLink" :icon="copied ? 'check' : 'copy'">
-                  {{ copied ? i18n 'pages.railwayAuto.copied' : i18n 'pages.railwayAuto.copy' }}
+                  [[ copied ? i18n 'pages.railwayAuto.copied' : i18n 'pages.railwayAuto.copy' ]]
                 </a-button>
               </div>
               <div style="margin-top: 10px; background: #f5f5f5; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 11px; word-break: break-all;">
-                {{ link }}
+                [[ link ]]
               </div>
             </div>
           </template>
@@ -95,6 +95,7 @@
 {{template "page/shell_end" . }}
 <script>
   const railwayApp = new Vue({
+    delimiters: ['[[', ']]'],
     data() {
       return {
         loading: false,
@@ -133,10 +134,10 @@
           if (result.success) {
             this.result = result.obj;
           } else {
-            this.error = result.error || '{{ i18n "pages.railwayAuto.error" }}';
+            this.error = '[[ i18n "pages.railwayAuto.error" ]]';
           }
         } catch (e) {
-          this.error = '{{ i18n "pages.railwayAuto.networkError" }}: ' + e.message;
+          this.error = '[[ i18n "pages.railwayAuto.networkError" ]]: ' + e.message;
         } finally {
           this.loading = false;
         }
@@ -147,7 +148,7 @@
           this.copied = true;
           setTimeout(() => { this.copied = false; }, 2000);
         } catch (e) {
-          this.error = '{{ i18n "pages.railwayAuto.copyFailed" }}';
+          this.error = '[[ i18n "pages.railwayAuto.copyFailed" ]]';
         }
       }
     }
