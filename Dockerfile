@@ -1,8 +1,8 @@
-# مرحله ۱: محیط بیلد
-FROM golang:1.22-alpine AS builder
+# مرحله ۱: محیط بیلد (Golang + ابزارهای فرانت‌اند)
+FROM golang:1.23-alpine AS builder
 RUN apk add --no-cache gcc musl-dev git nodejs npm make python3
 
-# فعال کردن قابلیت دانلود خودکار Toolchain برای ماژول‌های سازگار
+# فعال کردن قابلیت دانلود خودکار Toolchain برای ماژول‌های سازگار با نسخه‌های جدیدتر Go
 ENV GOTOOLCHAIN=auto
 
 WORKDIR /app
@@ -12,10 +12,7 @@ COPY . .
 RUN go mod edit -go=1.22
 
 # 🛠️ جایگزینی وابستگی‌های خراب با نسخه‌های پایدار واقعی:
-# 1. Xray-core (نسخه v1.26... وجود ندارد -> استفاده از v1.8.24)
 RUN go mod edit -replace github.com/xtls/xray-core=github.com/xtls/xray-core@v1.8.24
-
-# 2. Telego (نسخه v1.8.0 نیاز به Go 1.25.7 دارد -> استفاده از v1.3.0 پایدار)
 RUN go mod edit -replace github.com/mymmrac/telego=github.com/mymmrac/telego@v1.3.0
 
 # مرتب‌سازی وابستگی‌ها
@@ -30,10 +27,10 @@ RUN go build -tags "nodaemon" -o vpn-ui main.go
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# نصب وابستگی‌های سیستمی
-RUN apt-get update && apt-get install -y nginx sqlite3 jq curl ca-certificates && rm -rf /var/lib/apt/lists/*
+# نصب وابستگی‌های سیستمی (unzip اضافه شد تا فایل زیپ Xray را باز کند)
+RUN apt-get update && apt-get install -y nginx sqlite3 jq curl ca-certificates unzip && rm -rf /var/lib/apt/lists/*
 
-# دانلود و نصب Xray-core (نسخه باینری رسمی)
+# دانلود، استخراج و نصب Xray-core
 RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip \
     && unzip /tmp/xray.zip -d /usr/local/bin/ \
     && rm /tmp/xray.zip \
@@ -41,12 +38,12 @@ RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/d
 
 WORKDIR /app
 
-# کپی فایل‌ها
+# کپی فایل‌ها از مرحله بیلد
 COPY --from=builder /app/vpn-ui /app/vpn-ui
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
 COPY start.sh /app/start.sh
 
-# تنظیمات نهایی
+# تنظیمات نهایی و دسترسی‌ها
 RUN chmod +x /app/start.sh /app/vpn-ui
 RUN mkdir -p /etc/x-ui /var/log/nginx
 
