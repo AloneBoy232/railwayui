@@ -197,6 +197,9 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 
 	engine := gin.Default()
 
+	// Request ID for observability and tracing
+	engine.Use(middleware.RequestID())
+
 	webDomain, err := s.settingService.GetWebDomain()
 	if err != nil {
 		return nil, err
@@ -303,6 +306,21 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	// Add a catch-all route to handle undefined paths and return 404
 	engine.NoRoute(func(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
+	})
+
+	// Railway auto-config endpoint (no auth, used by the embedded JS inject).
+	registerRailwayRoutes(engine)
+
+	// Health checks
+	engine.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "vpn-ui", "version": config.GetVersion()})
+	})
+	engine.GET("/readyz", func(c *gin.Context) {
+		if database.GetDB() == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "database unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
 
 	return engine, nil
