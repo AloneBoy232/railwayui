@@ -9,8 +9,8 @@ ENV CGO_ENABLED=1
 ENV GOOS=linux
 ENV GOARCH=amd64
 
-# نصب ابزارهای بیلد + bash برای اجرای صحیح build.sh
-RUN apk add --no-cache gcc musl-dev git nodejs npm make python3 bash
+# نصب ابزارهای بیلد + bash برای اجرای اسکریپت + curl برای دانلود فایل‌های geo
+RUN apk add --no-cache gcc musl-dev git nodejs npm make python3 bash curl
 
 WORKDIR /app
 COPY . .
@@ -21,13 +21,8 @@ RUN go mod edit -go=1.22 || true
 # مرتب‌سازی وابستگی‌ها
 RUN go mod tidy
 
-# بیلد باینری vpn-ui
-# استفاده از bash به صورت صریح برای اجرای اسکریپت
-RUN if [ -f build.sh ]; then \
-        chmod +x build.sh && bash build.sh; \
-    else \
-        go build -tags "nodaemon" -o vpn-ui main.go; \
-    fi
+# بیلد باینری vpn-ui با استفاده از اسکریپت رسمی پروژه
+RUN chmod +x build.sh && bash build.sh
 
 # ==============================================================================
 # مرحله ۲: محیط اجرایی (Ubuntu)
@@ -49,12 +44,8 @@ RUN curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/d
 
 WORKDIR /app
 
-# کپی باینری vpn-ui از مرحله builder
-# چک کردن هر دو مسیر احتمالی خروجی build.sh
-COPY --from=builder /app/vpn-ui /app/vpn-ui
-RUN if [ ! -f /app/vpn-ui ] && [ -f /app/bin/vpn-ui ]; then \
-        cp /app/bin/vpn-ui /app/vpn-ui; \
-    fi
+# کپی باینری vpn-ui از مرحله builder (اسکریپت build.sh خروجی را در /app/bin/ قرار می‌دهد)
+COPY --from=builder /app/bin/vpn-ui /app/vpn-ui
 RUN chmod +x /app/vpn-ui
 
 # کپی فایل‌های پیکربندی
