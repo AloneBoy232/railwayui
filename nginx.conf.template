@@ -10,29 +10,45 @@ http {
     server {
         listen ${PORT};
         server_name _;
-        
-        # مسیریابی به پنل مدیریت (پورت پیش‌فرض 3x-ui 2053 است)
-        location /managepanel/ {
-            proxy_pass http://127.0.0.1:2053/;
+
+        # 1. هندل کردن تمام مسیرهای پنل (ریشه، استاتیک، API)
+        # این regex تمام مسیرهای اصلی پنل را مچ می‌کند
+        location ~ ^/(managepanel|assets|locales|panel|sub)/ {
+            # اگر درخواست از /managepanel/ آمد، اسلش اول را حذف کن و به پنل بفرست
+            rewrite ^/managepanel/(.*)$ /$1 break;
+            
+            proxy_pass http://127.0.0.1:2053;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # بازنویسی لینک‌های داخل HTML/JS برای اینکه مرورگر درخواست‌های بعدی را به /managepanel/ بفرستد
+            sub_filter 'href="/' 'href="/managepanel/';
+            sub_filter 'src="/' 'src="/managepanel/';
+            sub_filter_once off;
+            sub_filter_types text/html application/javascript text/css;
         }
-        
-        # مسیریابی به Xray (WebSocket)
+
+        # 2. مسیرهای WebSocket و gRPC برای Xray
         location /vless-ws {
             proxy_pass http://127.0.0.1:8080;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "Upgrade";
             proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
         }
-        
-        # مسیریابی به Xray (gRPC)
+
         location /grpc-service {
             grpc_pass grpc://127.0.0.1:8080;
             grpc_set_header Host $host;
+            grpc_set_header X-Real-IP $remote_addr;
+        }
+
+        # 3. ریدایرکت ریشه دامنه به پنل
+        location = / {
+            return 302 /managepanel/;
         }
     }
 }
