@@ -7,12 +7,13 @@ PANEL_PORT=2053
 echo "🚀 Starting Railway-Optimized 3x-ui..."
 echo "📌 Public Port: $RAILWAY_PORT"
 
-# جایگذاری پورت در کانفیگ Nginx
-sed -e "s/\${PORT}/${RAILWAY_PORT}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
-
-# تنظیم متغیرهای محیطی پنل
+# 🔥 تنظیم Base Path برای جلوگیری از مشکل صفحه سفید
+export WEB_BASE_PATH=/managepanel/
 export XUI_PORT=$PANEL_PORT
 export XUI_DB_PATH=/etc/x-ui/x-ui.db
+
+# جایگذاری پورت در کانفیگ Nginx
+sed -e "s/\${PORT}/${RAILWAY_PORT}/g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 echo "🖥️ Starting 3x-ui panel on internal port $PANEL_PORT..."
 cd /app/x-ui
